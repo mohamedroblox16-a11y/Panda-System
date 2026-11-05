@@ -87,7 +87,7 @@ if(pm&&(req.method==="GET"||req.method==="PATCH")){
  const vals=[String(b.channel_id||"").trim()||null,String(b.message||"").trim().slice(0,1800),String(b.button_label||"فتح تذكرة").trim().slice(0,50),String(b.button_emoji||"🎫").trim().slice(0,16),g.id];
  await env.DB.prepare("INSERT INTO ticket_panels(guild_id,channel_id,message,button_label,button_emoji) VALUES(?,?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,message=excluded.message,button_label=excluded.button_label,button_emoji=excluded.button_emoji,updated_at=CURRENT_TIMESTAMP").bind(...vals).run();return json({ok:true});
 }
-const m=u.pathname.match(/^\/api\/guilds\/([0-9]+)\/settings$/);if(m&&(req.method==="GET"||req.method==="PATCH")){const s=await session(req,env);if(!s)return json({error:"unauthorized"},401);const g=s.guilds.find(x=>x.id===m[1]&&x.canManage);if(!g)return json({error:"forbidden"},403);await env.DB.prepare("INSERT OR IGNORE INTO guild_settings(guild_id,guild_name) VALUES(?,?)").bind(g.id,g.name).run();if(req.method==="GET")return json({settings:await env.DB.prepare("SELECT * FROM guild_settings WHERE guild_id=?").bind(g.id).first()});let b;try{b=await req.json();}catch{return json({error:"invalid_json"},400);}const allowed=["language","prefix","welcome_enabled","welcome_channel_id","welcome_message","welcome_image_url","tickets_enabled","ticket_category_id","ticket_log_channel_id","levels_enabled","xp_multiplier","applications_enabled","logs_channel_id"],entries=Object.entries(b).filter(([k])=>allowed.includes(k));if(!entries.length)return json({error:"no_valid_fields"},400);const numeric=["welcome_enabled","tickets_enabled","levels_enabled","applications_enabled"];for(const [k,v] of entries){if(numeric.includes(k)&&![0,1,true,false].includes(v))return json({error:"invalid_value",field:k},400);if(k==="xp_multiplier"&&(!Number.isFinite(Number(v))||Number(v)<0.1||Number(v)>100))return json({error:"invalid_multiplier"},400);if(typeof v==="string"&&v.length>2000)return json({error:"too_long",field:k},400);}const sets=entries.map(([k])=>k+"=?").join(","),vals=entries.map(([k,v])=>numeric.includes(k)?(v===true?1:v===false?0:v):v);await env.DB.prepare("UPDATE guild_settings SET "+sets+",updated_at=CURRENT_TIMESTAMP WHERE guild_id=?").bind(...vals,g.id).run();await env.DB.prepare("INSERT INTO audit_logs(guild_id,actor_id,action,details) VALUES(?,?,?,?)").bind(g.id,s.id,"dashboard_settings_updated",JSON.stringify(entries.map(([k])=>k))).run();return json({settings:await env.DB.prepare("SELECT * FROM guild_settings WHERE guild_id=?").bind(g.id).first()});}return json({error:"not_found"},404);}
+const m=u.pathname.match(/^\/api\/guilds\/([0-9]+)\/settings$/);if(m&&(req.method==="GET"||req.method==="PATCH")){const s=await session(req,env);if(!s)return json({error:"unauthorized"},401);const g=s.guilds.find(x=>x.id===m[1]&&x.canManage);if(!g)return json({error:"forbidden"},403);await env.DB.prepare("INSERT OR IGNORE INTO guild_settings(guild_id,guild_name) VALUES(?,?)").bind(g.id,g.name).run();if(req.method==="GET")return json({settings:await env.DB.prepare("SELECT * FROM guild_settings WHERE guild_id=?").bind(g.id).first()});let b;try{b=await req.json();}catch{return json({error:"invalid_json"},400);}const allowed=["language","prefix","welcome_enabled","welcome_channel_id","welcome_message","welcome_image_url","tickets_enabled","ticket_category_id","ticket_log_channel_id","levels_enabled","xp_multiplier","level_up_channel_id","applications_enabled","logs_channel_id"],entries=Object.entries(b).filter(([k])=>allowed.includes(k));if(!entries.length)return json({error:"no_valid_fields"},400);const numeric=["welcome_enabled","tickets_enabled","levels_enabled","applications_enabled"];for(const [k,v] of entries){if(numeric.includes(k)&&![0,1,true,false].includes(v))return json({error:"invalid_value",field:k},400);if(k==="xp_multiplier"&&(!Number.isFinite(Number(v))||Number(v)<0.1||Number(v)>100))return json({error:"invalid_multiplier"},400);if(typeof v==="string"&&v.length>2000)return json({error:"too_long",field:k},400);}const sets=entries.map(([k])=>k+"=?").join(","),vals=entries.map(([k,v])=>numeric.includes(k)?(v===true?1:v===false?0:v):v);await env.DB.prepare("UPDATE guild_settings SET "+sets+",updated_at=CURRENT_TIMESTAMP WHERE guild_id=?").bind(...vals,g.id).run();await env.DB.prepare("INSERT INTO audit_logs(guild_id,actor_id,action,details) VALUES(?,?,?,?)").bind(g.id,s.id,"dashboard_settings_updated",JSON.stringify(entries.map(([k])=>k))).run();return json({settings:await env.DB.prepare("SELECT * FROM guild_settings WHERE guild_id=?").bind(g.id).first()});}return json({error:"not_found"},404);}
 async function editInteractionReply(i, body) {
   if (!i.application_id || !i.token) {
     console.error("[Tickets] missing interaction webhook credentials");
@@ -288,32 +288,24 @@ async function closeTicketForInteraction(i, env) {
   const staff = (permissions & 8n) !== 0n || (permissions & 32n) !== 0n;
   if (ticket.user_id !== user.id && !staff) return "صاحب التذكرة أو الإدارة فقط يمكنهم إغلاقها.";
 
-  // Keep the ticket visible to its owner, but remove their Send Messages permission.
-  // Discord's Modify Channel Permissions endpoint requires Manage Roles (or Administrator).
-  const lock = await fetch(
-    "https://discord.com/api/v10/channels/" + ticket.channel_id + "/permissions/" + ticket.user_id,
-    {
-      method: "PUT",
-      headers: {
-        Authorization: "Bot " + env.DISCORD_BOT_TOKEN,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({ type: 1, allow: "66560", deny: "2048" })
-    }
+  // Delete the ticket channel when the close button is pressed.
+  const deleted = await fetch(
+    "https://discord.com/api/v10/channels/" + ticket.channel_id,
+    { method: "DELETE", headers: { Authorization: "Bot " + env.DISCORD_BOT_TOKEN } }
   );
 
-  if (!lock.ok) {
-    const detail = await lock.text().catch(() => "");
-    console.error("[Tickets] could not lock ticket channel", lock.status, detail.slice(0, 500));
-    if (lock.status === 403) return "مش قادر أقفل التذكرة: ادّي البوت صلاحية Manage Roles أو Administrator.";
-    return "Discord رفض قفل التذكرة (HTTP " + lock.status + "). راجع سجلات Cloudflare.";
+  if (!deleted.ok) {
+    const detail = await deleted.text().catch(() => "");
+    console.error("[Tickets] could not delete ticket channel", deleted.status, detail.slice(0, 500));
+    if (deleted.status === 403) return "مش قادر أحذف الروم: ادّي البوت صلاحية Manage Channels.";
+    if (deleted.status !== 404) return "Discord رفض حذف الروم (HTTP " + deleted.status + "). راجع صلاحيات البوت.";
   }
 
   await env.DB.prepare(
     "UPDATE tickets SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=?"
   ).bind(ticket.id).run();
 
-  return "🔒 تم إغلاق التذكرة بواسطة <@" + user.id + ">.";
+  return "🗑️ تم حذف روم التذكرة بواسطة <@" + user.id + ">.";
 }
 
 async function handleInteraction(i, env, ctx) {
@@ -367,7 +359,7 @@ async function handleInteraction(i, env, ctx) {
       ctx.waitUntil((async () => {
         const content = await closeTicketForInteraction(i, env);
         // Remove the close button only after Discord confirms the channel lock succeeded.
-        await editInteractionReply(i, content.startsWith("🔒")
+        await editInteractionReply(i, content.startsWith("🗑️")
           ? { content, components: [] }
           : { content });
       })().catch(async error => {
@@ -685,7 +677,7 @@ export class PandaGateway {
     this.cooldowns.set(key, now);
 
     const settings = await this.env.DB.prepare(
-      "SELECT levels_enabled,xp_multiplier FROM guild_settings WHERE guild_id=?"
+      "SELECT levels_enabled,xp_multiplier,level_up_channel_id FROM guild_settings WHERE guild_id=?"
     ).bind(message.guild_id).first();
     if (!settings?.levels_enabled) return;
 
@@ -703,10 +695,28 @@ export class PandaGateway {
 
     let level = 0;
     while (level < 1000 && profile.xp >= 5 * level * level + 50 * level + 100) level++;
-    if (level !== profile.level) {
+    if (level > Number(profile.level || 0)) {
       await this.env.DB.prepare(
         "UPDATE level_profiles SET level=?,updated_at=CURRENT_TIMESTAMP WHERE guild_id=? AND user_id=?"
       ).bind(level, message.guild_id, message.author.id).run();
+
+      if (settings.level_up_channel_id) {
+        const notice = await fetch(
+          "https://discord.com/api/v10/channels/" + settings.level_up_channel_id + "/messages",
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bot " + this.env.DISCORD_BOT_TOKEN,
+              "content-type": "application/json"
+            },
+            body: JSON.stringify({
+              content: "🎉 مبروك <@" + message.author.id + ">! وصلت للمستوى **" + level + "** 🏆",
+              allowed_mentions: { users: [message.author.id] }
+            })
+          }
+        );
+        if (!notice.ok) console.error("[PandaGateway] level-up announcement failed", notice.status, (await notice.text().catch(() => "")).slice(0, 300));
+      }
     }
   }
 }
