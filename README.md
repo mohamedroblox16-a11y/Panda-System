@@ -35,7 +35,7 @@ The design uses Discord Interactions and HTTP-triggered events where supported. 
    ```bash
    npx wrangler deploy
    ```
-6. In the Discord Developer Portal, set the Interactions Endpoint URL to:
+6. Register slash commands once from a trusted local terminal after setting `DISCORD_APPLICATION_ID` and `DISCORD_BOT_TOKEN` as environment variables (never commit them):\n   `npm run register:commands`\n7. In the Discord Developer Portal, set the Interactions Endpoint URL to:
    `https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev/interactions`
 
 ## Important
