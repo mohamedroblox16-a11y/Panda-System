@@ -275,7 +275,7 @@ async function closeTicketForInteraction(i, env) {
   if (!guild || !user.id) return "تعذر تحديد السيرفر أو العضو.";
   if (!env.DISCORD_BOT_TOKEN) return "إعدادات البوت ناقصة على Cloudflare.";
 
-  const close = String(i.data?.custom_id || "").match(/^panda:ticket:close:(\\d+)$/);
+  const close = String(i.data?.custom_id || "").match(/^panda:ticket:close:(\d+)$/);
   if (!close) return "زر إغلاق التذكرة غير صالح.";
 
   const ticket = await env.DB.prepare(
@@ -357,7 +357,7 @@ async function handleInteraction(i, env, ctx) {
       return json({ type: 5, data: { flags: 64 } });
     }
 
-    const close = customId.match(/^panda:ticket:close:\\d+$/);
+    const close = customId.match(/^panda:ticket:close:\d+$/);
     if (close) {
       if (!ctx?.waitUntil) {
         return json({ type: 4, data: { content: "تعذر تشغيل إغلاق التذكرة حاليًا. حاول مرة أخرى.", flags: 64 } });
@@ -376,7 +376,6 @@ async function handleInteraction(i, env, ctx) {
       }));
 
       return json({ type: 6 });
-    }
     }
   }
 
