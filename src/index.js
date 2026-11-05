@@ -27,13 +27,13 @@ if(tm&&["GET","POST","PATCH","DELETE"].includes(req.method)){
  await env.DB.prepare("UPDATE ticket_types SET label=?,description=?,emoji=?,category_id=?,enabled=? WHERE guild_id=? AND id=?").bind(label,description,emoji,category_id||null,enabled,g.id,Number(tm[2])).run();return json({ok:true});
 }
 
-const publishMatch=u.pathname.match(/^\\/api\\/guilds\\/([0-9]+)\\/ticket-panel\\/publish$/);
+const publishMatch=u.pathname.match(/^\/api\/guilds\/([0-9]+)\/ticket-panel\/publish$/);
 if(publishMatch&&req.method==="POST"){
  const s=await session(req,env);if(!s)return json({error:"سجّل الدخول أولاً."},401);
  const g=s.guilds.find(x=>x.id===publishMatch[1]&&x.canManage);if(!g)return json({error:"ليس لديك صلاحية إدارة السيرفر."},403);
  if(!env.DISCORD_BOT_TOKEN)return json({error:"Bot Token غير موجود في Cloudflare."},503);
  let b;try{b=await req.json()}catch{return json({error:"بيانات غير صالحة."},400)}
- const channelId=String(b.channel_id||"").trim();if(!/^\\d{17,20}$/.test(channelId))return json({error:"اختار قناة صحيحة."},400);
+ const channelId=String(b.channel_id||"").trim();if(!/^\d{17,20}$/.test(channelId))return json({error:"اختار قناة صحيحة."},400);
  const rows=await env.DB.prepare("SELECT id,label,emoji FROM ticket_types WHERE guild_id=? AND enabled=1 ORDER BY sort_order,id LIMIT 25").bind(g.id).all();
  if(!rows.results?.length)return json({error:"أضف نوع تذكرة واحدًا على الأقل قبل النشر."},400);
  const types=rows.results,components=[];
@@ -62,7 +62,7 @@ async function handleInteraction(i,env){
  if(i.type===3){
   const cid=String(i.data?.custom_id||""),guild=i.guild_id,member=i.member||{},user=member.user||i.user||{};
   if(!guild||!user.id)return json({type:4,data:{content:"تعذر تحديد السيرفر أو العضو.",flags:64}});
-  const create=cid.match(/^panda:ticket:create:(\\d+)$/);
+  const create=cid.match(/^panda:ticket:create:(\d+)$/);
   if(create){
    const type=await env.DB.prepare("SELECT id,label,category_id FROM ticket_types WHERE id=? AND guild_id=? AND enabled=1").bind(Number(create[1]),guild).first();
    if(!type)return json({type:4,data:{content:"نوع التذكرة غير متاح.",flags:64}});
@@ -79,11 +79,11 @@ async function handleInteraction(i,env){
    const channel=await cr.json().catch(()=>({}));
    if(!cr.ok){console.error("[Tickets] create channel",cr.status,channel);return json({type:4,data:{content:cr.status===403?"البوت محتاج صلاحية Manage Channels. راجع صلاحياته.":"Discord رفض إنشاء القناة. تأكد من صلاحيات البوت والفئة.",flags:64}});}
    const inserted=await env.DB.prepare("INSERT INTO tickets(guild_id,channel_id,user_id,ticket_type_id,status) VALUES(?,?,?,?,'open')").bind(guild,channel.id,user.id,type.id).run(),ticketId=inserted.meta?.last_row_id;
-   const msg={content:"🎫 **"+type.label+"**\\nأهلاً <@"+user.id+">، اكتب تفاصيل طلبك هنا.",components:[{type:1,components:[{type:2,style:4,label:"إغلاق التذكرة",emoji:{name:"🔒"},custom_id:"panda:ticket:close:"+ticketId}]}],allowed_mentions:{users:[user.id]}};
+   const msg={content:"🎫 **"+type.label+"**\nأهلاً <@"+user.id+">، اكتب تفاصيل طلبك هنا.",components:[{type:1,components:[{type:2,style:4,label:"إغلاق التذكرة",emoji:{name:"🔒"},custom_id:"panda:ticket:close:"+ticketId}]}],allowed_mentions:{users:[user.id]}};
    await fetch("https://discord.com/api/v10/channels/"+channel.id+"/messages",{method:"POST",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify(msg)});
    return json({type:4,data:{content:"تم إنشاء تذكرتك: <#"+channel.id+">",flags:64}});
   }
-  const close=cid.match(/^panda:ticket:close:(\\d+)$/);
+  const close=cid.match(/^panda:ticket:close:(\d+)$/);
   if(close){
    const t=await env.DB.prepare("SELECT id,user_id,channel_id,status FROM tickets WHERE id=? AND guild_id=?").bind(Number(close[1]),guild).first();
    if(!t||t.status!=="open")return json({type:4,data:{content:"التذكرة مغلقة بالفعل أو غير موجودة.",flags:64}});
