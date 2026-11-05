@@ -169,9 +169,24 @@ async function createTicketForInteraction(i, env) {
 
     const bot = await botRes.json();
     const category = type.category_id || settings?.ticket_category_id;
-    const safeUsername = String(user.username || "member").toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 65) || "member";
+
+    // Allocate a unique, increasing ticket number per server.
+    await env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS ticket_counters (guild_id TEXT PRIMARY KEY, next_number INTEGER NOT NULL DEFAULT 0)"
+    ).run();
+    const counter = await env.DB.prepare(
+      "INSERT INTO ticket_counters(guild_id,next_number) VALUES(?,1) " +
+      "ON CONFLICT(guild_id) DO UPDATE SET next_number=next_number+1 RETURNING next_number"
+    ).bind(guild).first();
+    const ticketNumber = Number(counter?.next_number || 1);
+    const buttonSlug = String(type.label || "ticket")
+      .normalize("NFKC")
+      .toLowerCase()
+      .replace(/[^\\p{L}\\p{N}_-]+/gu, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 85) || "ticket";
     const channelBody = {
-      name: "ticket-" + safeUsername,
+      name: buttonSlug + "_" + ticketNumber,
       type: 0,
       permission_overwrites: [
         { id: guild, type: 0, deny: "1024" },
@@ -673,4 +688,4 @@ export class PandaGateway {
   }
 }
 
-export default {async scheduled(controller,env,ctx){const id=env.PANDA_GATEWAY.idFromName("main");ctx.waitUntil(env.PANDA_GATEWAY.get(id).fetch("https://gateway.internal/start",{method:"POST"}));},async fetch(req,env,ctx){const u=new URL(req.url);if(u.pathname==="/auth/discord"&&req.method==="GET")return oauthStart(req,env);if(u.pathname==="/auth/discord/callback"&&req.method==="GET"){try{return await oauthCallback(req,env);}catch(e){console.error("OAuth callback error",e);return new Response("OAuth login failed. Check Worker logs and settings.",{status:500});}}if(u.pathname==="/auth/logout"&&req.method==="POST"){const t=getCookie(req);if(t)await env.DB.prepare("DELETE FROM dashboard_sessions WHERE token_hash=?").bind(await hash(t)).run();return redirect("/",{"Set-Cookie":COOKIE+"=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"});}if(u.pathname==="/api/bot/status"&&req.method==="GET"){const id=env.PANDA_GATEWAY.idFromName("main");return env.PANDA_GATEWAY.get(id).fetch("https://gateway.internal/start",{method:"POST"});}if(u.pathname.startsWith("/api/")){if(u.pathname==="/api/health")return json({ok:true,service:"Panda System",databaseConfigured:Boolean(env.DB),oauthConfigured:Boolean(env.DISCORD_CLIENT_ID&&env.DISCORD_CLIENT_SECRET)});return api(req,env,u);}if(u.pathname==="/interactions"&&req.method==="POST"){if(!await verify(req,env.DISCORD_PUBLIC_KEY))return new Response("Invalid request signature",{status:401});let i;try{i=await req.json();}catch{return new Response("Invalid JSON",{status:400});}try{return await handleInteraction(i,env,ctx);}catch(e){console.error(e);return json({type:4,data:{content:"حصل خطأ مؤقت.",flags:64}});}}if(env.ASSETS)return env.ASSETS.fetch(req);return new Response("Panda System");}};
+export default {async scheduled(controller,env,ctx){const id=env.PANDA_GATEWAY.idFromName("main");ctx.waitUntil(env.PANDA_GATEWAY.get(id).fetch("https://gateway.internal/start",{method:"POST"}));},async fetch(req,env,ctx){const u=new URL(req.url);if(u.pathname==="/auth/discord"&&req.method==="GET")return oauthStart(req,env);if(u.pathname==="/auth/discord/callback"&&req.method==="GET"){try{return await oauthCallback(req,env);}catch(e){console.error("OAuth callback error",e);return new Response("OAuth login failed. Check Worker logs and settings.",{status:500});}}if(u.pathname==="/auth/logout"&&req.method==="POST"){const t=getCookie(req);if(t)await env.DB.prepare("DELETE FROM dashboard_sessions WHERE token_hash=?").bind(await hash(t)).run();return redirect("/",{"Set-Cookie":COOKIE+"=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"});}if(u.pathname==="/api/bot/status"&&req.method==="GET"){const id=env.PANDA_GATEWAY.idFromName("main");return env.PANDA_GATEWAY.get(id).fetch("https://gateway.internal/start",{method:"POST"});}if(u.pathname.startsWith("/api/")){if(u.pathname==="/api/health")return json({ok:true,service:"Panda System",databaseConfigured:Boolean(env.DB),oauthConfigured:Boolean(env.DISCORD_CLIENT_ID&&env.DISCORD_CLIENT_SECRET)});return api(req,env,u);}if(u.pathname==="/interactions"&&req.method==="POST"){console.log("[Interactions] request received");if(!await verify(req,env.DISCORD_PUBLIC_KEY)){console.error("[Interactions] signature verification failed; check DISCORD_PUBLIC_KEY and the Discord endpoint URL.");return new Response("Invalid request signature",{status:401});}let i;try{i=await req.json();}catch{return new Response("Invalid JSON",{status:400});}console.log("[Interactions] verified", {type:i.type,custom_id:i.data?.custom_id||null,guild_id:i.guild_id||null});try{return await handleInteraction(i,env,ctx);}catch(e){console.error("[Interactions] handler failed",e?.stack||e);return json({type:4,data:{content:"حصل خطأ مؤقت. راجع سجلات Cloudflare.",flags:64}});}}if(env.ASSETS)return env.ASSETS.fetch(req);return new Response("Panda System");}};
