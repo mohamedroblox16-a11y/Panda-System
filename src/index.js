@@ -2,7 +2,8 @@ const json=(data,status=200,headers={})=>new Response(JSON.stringify(data),{stat
 const COOKIE="panda_session",TTL=604800,MANAGE=32n,ADMIN=8n;
 function randomToken(){return Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,"0")).join("");}
 async function hash(v){const d=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(v));return Array.from(new Uint8Array(d),b=>b.toString(16).padStart(2,"0")).join("");}
-function readCookie(req,name){const x=(req.headers.get("Cookie")||"").split(";").map(v=>v.trim()).find(v=>v.startsWith(name+"="));return x?decodeURIComponent(x.slice(name.length+1)):null;}\nfunction getCookie(req){return readCookie(req,COOKIE);}
+function readCookie(req,name){const x=(req.headers.get("Cookie")||"").split(";").map(v=>v.trim()).find(v=>v.startsWith(name+"="));return x?decodeURIComponent(x.slice(name.length+1)):null;}
+function getCookie(req){return readCookie(req,COOKIE);}
 function setCookie(v,age=TTL){return COOKIE+"="+encodeURIComponent(v)+"; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age="+age;}
 function redirect(url,headers={}){return new Response(null,{status:302,headers:{Location:url,...headers}});}
 function callbackUri(req,env){return (env.PUBLIC_BASE_URL||new URL(req.url).origin).replace(/\/$/,"")+"/auth/discord/callback";}
