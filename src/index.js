@@ -37,7 +37,20 @@ if(publishMatch&&req.method==="POST"){
  const rows=await env.DB.prepare("SELECT id,label,emoji FROM ticket_types WHERE guild_id=? AND enabled=1 ORDER BY sort_order,id LIMIT 25").bind(g.id).all();
  if(!rows.results?.length)return json({error:"أضف نوع تذكرة واحدًا على الأقل قبل النشر."},400);
  await env.DB.prepare("CREATE TABLE IF NOT EXISTS ticket_panel_posts (guild_id TEXT PRIMARY KEY,channel_id TEXT NOT NULL,message_id TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
- const previous=await env.DB.prepare("SELECT channel_id,message_id FROM ticket_panel_posts WHERE guild_id=?").bind(g.id).first();
+ let previous=await env.DB.prepare("SELECT channel_id,message_id FROM ticket_panel_posts WHERE guild_id=?").bind(g.id).first();
+ // Adopt an older Panda ticket panel on first update so it is edited instead of duplicated.
+ if(!previous){
+   const botIdentity=await fetch("https://discord.com/api/v10/users/@me",{headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN}});
+   if(botIdentity.ok){
+     const bot=await botIdentity.json();
+     const recent=await fetch("https://discord.com/api/v10/channels/"+channelId+"/messages?limit=100",{headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN}});
+     if(recent.ok){
+       const messages=await recent.json();
+       const oldPanel=messages.find(m=>m.author?.id===bot.id&&(m.components||[]).some(row=>(row.components||[]).some(c=>String(c.custom_id||"").startsWith("panda:ticket:create:"))));
+       if(oldPanel)previous={channel_id:channelId,message_id:oldPanel.id};
+     }
+   }
+ }
  const types=rows.results,components=[];
  for(let i=0;i<types.length;i+=5)components.push({type:1,components:types.slice(i,i+5).map(t=>({type:2,style:1,label:String(t.label).slice(0,80),emoji:t.emoji?{name:t.emoji}:undefined,custom_id:"panda:ticket:create:"+t.id}))});
  const body={content:String(b.message||"اختار نوع التذكرة المناسب من الأزرار بالأسفل.").slice(0,1800),components,allowed_mentions:{parse:[]}};
