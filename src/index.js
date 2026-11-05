@@ -37,4 +37,94 @@ if(pm&&(req.method==="GET"||req.method==="PATCH")){
 }
 const m=u.pathname.match(/^\/api\/guilds\/([0-9]+)\/settings$/);if(m&&(req.method==="GET"||req.method==="PATCH")){const s=await session(req,env);if(!s)return json({error:"unauthorized"},401);const g=s.guilds.find(x=>x.id===m[1]&&x.canManage);if(!g)return json({error:"forbidden"},403);await env.DB.prepare("INSERT OR IGNORE INTO guild_settings(guild_id,guild_name) VALUES(?,?)").bind(g.id,g.name).run();if(req.method==="GET")return json({settings:await env.DB.prepare("SELECT * FROM guild_settings WHERE guild_id=?").bind(g.id).first()});let b;try{b=await req.json();}catch{return json({error:"invalid_json"},400);}const allowed=["language","prefix","welcome_enabled","welcome_channel_id","welcome_message","welcome_image_url","tickets_enabled","ticket_category_id","ticket_log_channel_id","levels_enabled","xp_multiplier","applications_enabled","logs_channel_id"],entries=Object.entries(b).filter(([k])=>allowed.includes(k));if(!entries.length)return json({error:"no_valid_fields"},400);const numeric=["welcome_enabled","tickets_enabled","levels_enabled","applications_enabled"];for(const [k,v] of entries){if(numeric.includes(k)&&![0,1,true,false].includes(v))return json({error:"invalid_value",field:k},400);if(k==="xp_multiplier"&&(!Number.isFinite(Number(v))||Number(v)<0.1||Number(v)>100))return json({error:"invalid_multiplier"},400);if(typeof v==="string"&&v.length>2000)return json({error:"too_long",field:k},400);}const sets=entries.map(([k])=>k+"=?").join(","),vals=entries.map(([k,v])=>numeric.includes(k)?(v===true?1:v===false?0:v):v);await env.DB.prepare("UPDATE guild_settings SET "+sets+",updated_at=CURRENT_TIMESTAMP WHERE guild_id=?").bind(...vals,g.id).run();await env.DB.prepare("INSERT INTO audit_logs(guild_id,actor_id,action,details) VALUES(?,?,?,?)").bind(g.id,s.id,"dashboard_settings_updated",JSON.stringify(entries.map(([k])=>k))).run();return json({settings:await env.DB.prepare("SELECT * FROM guild_settings WHERE guild_id=?").bind(g.id).first()});}return json({error:"not_found"},404);}
 async function handleInteraction(i,env){if(i.type===1)return json({type:1});if(i.type===2){const n=i.data?.name;if(n==="panda")return json({type:4,data:{content:"🐼 Panda System متصل.",flags:64}});if(n==="setup"){if(!i.guild_id)return json({type:4,data:{content:"استخدم الأمر داخل سيرفر.",flags:64}});await env.DB.prepare("INSERT OR IGNORE INTO guild_settings(guild_id) VALUES(?)").bind(i.guild_id).run();return json({type:4,data:{content:"تم إنشاء إعدادات Panda System الأساسية لهذا السيرفر.",flags:64}});}}return json({type:4,data:{content:"التفاعل ده لسه مش متاح.",flags:64}});}
-export default {async fetch(req,env){const u=new URL(req.url);if(u.pathname==="/auth/discord"&&req.method==="GET")return oauthStart(req,env);if(u.pathname==="/auth/discord/callback"&&req.method==="GET"){try{return await oauthCallback(req,env);}catch(e){console.error("OAuth callback error",e);return new Response("OAuth login failed. Check Worker logs and settings.",{status:500});}}if(u.pathname==="/auth/logout"&&req.method==="POST"){const t=getCookie(req);if(t)await env.DB.prepare("DELETE FROM dashboard_sessions WHERE token_hash=?").bind(await hash(t)).run();return redirect("/",{"Set-Cookie":COOKIE+"=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"});}if(u.pathname.startsWith("/api/")){if(u.pathname==="/api/health")return json({ok:true,service:"Panda System",databaseConfigured:Boolean(env.DB),oauthConfigured:Boolean(env.DISCORD_CLIENT_ID&&env.DISCORD_CLIENT_SECRET)});return api(req,env,u);}if(u.pathname==="/interactions"&&req.method==="POST"){if(!await verify(req,env.DISCORD_PUBLIC_KEY))return new Response("Invalid request signature",{status:401});let i;try{i=await req.json();}catch{return new Response("Invalid JSON",{status:400});}try{return await handleInteraction(i,env);}catch(e){console.error(e);return json({type:4,data:{content:"حصل خطأ مؤقت.",flags:64}});}}if(env.ASSETS)return env.ASSETS.fetch(req);return new Response("Panda System");}};
+
+export class PandaGateway {
+  constructor(ctx, env) {
+    this.ctx=ctx; this.env=env; this.ws=null; this.heartbeat=null; this.seq=null;
+    this.retry=0; this.lastAck=Date.now(); this.cooldowns=new Map();
+  }
+  async status(){return await this.ctx.storage.get("gateway_status")||{state:"offline",detail:"لم يبدأ الاتصال بعد",updated_at:new Date().toISOString()};}
+  async setStatus(state,detail=""){await this.ctx.storage.put("gateway_status",{state,detail,updated_at:new Date().toISOString()});}
+  async fetch(req){
+    const path=new URL(req.url).pathname;
+    if(path==="/status")return json(await this.status());
+    if(path==="/start"){await this.connect(true);return json({ok:true,status:await this.status()});}
+    return json({error:"not_found"},404);
+  }
+  async connect(force=false){
+    if(!this.env.DISCORD_BOT_TOKEN){await this.setStatus("error","Secret DISCORD_BOT_TOKEN غير موجود في Worker.");return;}
+    if(this.ws&&this.ws.readyState===1&&!force)return;
+    try{if(this.ws)this.ws.close(1000,"reconnecting");}catch{}
+    if(this.heartbeat){clearInterval(this.heartbeat);this.heartbeat=null;}
+    await this.setStatus("connecting","جاري الاتصال بـ Discord Gateway");
+    try{
+      const ws=new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
+      this.ws=ws;
+      ws.addEventListener("message",e=>this.onMessage(e.data,ws).catch(err=>console.error("Gateway message error",err)));
+      ws.addEventListener("close",e=>this.onClose(e,ws));
+      ws.addEventListener("error",()=>this.setStatus("error","حدث خطأ في اتصال Gateway."));
+      await this.ctx.storage.setAlarm(Date.now()+14*60*1000);
+    }catch(e){await this.setStatus("error","تعذر فتح اتصال Gateway: "+String(e).slice(0,180));await this.ctx.storage.setAlarm(Date.now()+30000);}
+  }
+  send(data){if(this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify(data));}
+  async onMessage(raw,ws){
+    if(ws!==this.ws)return;
+    let p;try{p=JSON.parse(raw);}catch{return;}
+    if(p.s!==null&&p.s!==undefined)this.seq=p.s;
+    if(p.op===10){
+      const ms=p.d.heartbeat_interval;
+      if(this.heartbeat)clearInterval(this.heartbeat);
+      this.heartbeat=setInterval(()=>{this.send({op:1,d:this.seq});},ms);
+      this.send({op:2,d:{token:this.env.DISCORD_BOT_TOKEN,intents:1|2|512|32768,properties:{"$os":"cloudflare","$browser":"panda-system","$device":"panda-system"}}});
+      return;
+    }
+    if(p.op===1){this.send({op:1,d:this.seq});return;}
+    if(p.op===7){await this.setStatus("reconnecting","Discord طلب إعادة الاتصال.");await this.connect(true);return;}
+    if(p.op===9){await this.setStatus("reconnecting","جلسة Gateway غير صالحة؛ إعادة المحاولة.");this.seq=null;await this.ctx.storage.setAlarm(Date.now()+5000);return;}
+    if(p.op===11){this.lastAck=Date.now();return;}
+    if(p.op===0){
+      if(p.t==="READY"){await this.setStatus("online","اتصال Discord Gateway نشط.");this.retry=0;}
+      if(p.t==="RESUMED")await this.setStatus("online","تم استئناف اتصال Discord Gateway.");
+      if(p.t==="GUILD_MEMBER_ADD")await this.welcome(p.d);
+      if(p.t==="MESSAGE_CREATE")await this.addXp(p.d);
+    }
+  }
+  async onClose(e,ws){
+    if(ws!==this.ws)return;
+    if(this.heartbeat){clearInterval(this.heartbeat);this.heartbeat=null;}
+    const detail=e.code===4014?"Discord رفض Intents؛ فعّل Server Members Intent وMessage Content Intent من Developer Portal.":e.code===4004?"Bot Token غير صحيح.":("انقطع الاتصال (code "+e.code+"). إعادة المحاولة.");
+    await this.setStatus("reconnecting",detail);
+    this.retry=Math.min(this.retry+1,6);
+    await this.ctx.storage.setAlarm(Date.now()+Math.min(60000,5000*this.retry));
+  }
+  async alarm(){await this.connect(true);}
+  async discord(path,body){
+    if(!this.env.DISCORD_BOT_TOKEN)return;
+    const r=await fetch("https://discord.com/api/v10"+path,{method:"POST",headers:{Authorization:"Bot "+this.env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok)console.error("Discord REST error",r.status,await r.text().catch(()=>""));
+  }
+  async welcome(member){
+    const gid=member.guild_id||member.guild?.id;if(!gid)return;
+    const s=await this.env.DB.prepare("SELECT welcome_enabled,welcome_channel_id,welcome_message,welcome_image_url FROM guild_settings WHERE guild_id=?").bind(gid).first();
+    if(!s||!s.welcome_enabled||!s.welcome_channel_id)return;
+    const user=member.user||member;
+    let content=String(s.welcome_message||"أهلاً {user} نورت السيرفر! 🐼").replaceAll("{user}","<@"+user.id+">").replaceAll("{username}",user.username||"عضو").replaceAll("{server}","السيرفر");
+    const body={content,allowed_mentions:{parse:["users"]}};
+    if(s.welcome_image_url)body.embeds=[{image:{url:s.welcome_image_url}}];
+    await this.discord("/channels/"+s.welcome_channel_id+"/messages",body);
+  }
+  async addXp(msg){
+    if(!msg.guild_id||!msg.author||msg.author.bot||!msg.content?.trim())return;
+    const key=msg.guild_id+":"+msg.author.id,now=Date.now(),last=this.cooldowns.get(key)||0;
+    if(now-last<60000)return;this.cooldowns.set(key,now);
+    const s=await this.env.DB.prepare("SELECT levels_enabled,xp_multiplier FROM guild_settings WHERE guild_id=?").bind(msg.guild_id).first();
+    if(!s||!s.levels_enabled)return;
+    const amount=Math.max(1,Math.round((15+Math.floor(Math.random()*11))*(Number(s.xp_multiplier)||1)));
+    await this.env.DB.prepare("INSERT INTO level_profiles(guild_id,user_id,xp,level,messages_count) VALUES(?,?,?,0,1) ON CONFLICT(guild_id,user_id) DO UPDATE SET xp=xp+excluded.xp,messages_count=messages_count+1,updated_at=CURRENT_TIMESTAMP").bind(msg.guild_id,msg.author.id,amount).run();
+    const row=await this.env.DB.prepare("SELECT xp,level FROM level_profiles WHERE guild_id=? AND user_id=?").bind(msg.guild_id,msg.author.id).first();
+    let level=0;while(level<1000&&row.xp>=5*level*level+50*level+100)level++;
+    if(level!==row.level)await this.env.DB.prepare("UPDATE level_profiles SET level=?,updated_at=CURRENT_TIMESTAMP WHERE guild_id=? AND user_id=?").bind(level,msg.guild_id,msg.author.id).run();
+  }
+}
+
+export default {async scheduled(controller,env,ctx){const id=env.PANDA_GATEWAY.idFromName("main");ctx.waitUntil(env.PANDA_GATEWAY.get(id).fetch("https://gateway.internal/start",{method:"POST"}));},async fetch(req,env){const u=new URL(req.url);if(u.pathname==="/auth/discord"&&req.method==="GET")return oauthStart(req,env);if(u.pathname==="/auth/discord/callback"&&req.method==="GET"){try{return await oauthCallback(req,env);}catch(e){console.error("OAuth callback error",e);return new Response("OAuth login failed. Check Worker logs and settings.",{status:500});}}if(u.pathname==="/auth/logout"&&req.method==="POST"){const t=getCookie(req);if(t)await env.DB.prepare("DELETE FROM dashboard_sessions WHERE token_hash=?").bind(await hash(t)).run();return redirect("/",{"Set-Cookie":COOKIE+"=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"});}if(u.pathname==="/api/bot/status"&&req.method==="GET"){const id=env.PANDA_GATEWAY.idFromName("main");return env.PANDA_GATEWAY.get(id).fetch("https://gateway.internal/status");}if(u.pathname.startsWith("/api/")){if(u.pathname==="/api/health")return json({ok:true,service:"Panda System",databaseConfigured:Boolean(env.DB),oauthConfigured:Boolean(env.DISCORD_CLIENT_ID&&env.DISCORD_CLIENT_SECRET)});return api(req,env,u);}if(u.pathname==="/interactions"&&req.method==="POST"){if(!await verify(req,env.DISCORD_PUBLIC_KEY))return new Response("Invalid request signature",{status:401});let i;try{i=await req.json();}catch{return new Response("Invalid JSON",{status:400});}try{return await handleInteraction(i,env);}catch(e){console.error(e);return json({type:4,data:{content:"حصل خطأ مؤقت.",flags:64}});}}if(env.ASSETS)return env.ASSETS.fetch(req);return new Response("Panda System");}};
