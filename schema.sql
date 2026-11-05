@@ -1,0 +1,69 @@
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS guild_settings (
+  guild_id TEXT PRIMARY KEY,
+  guild_name TEXT,
+  language TEXT NOT NULL DEFAULT 'ar',
+  prefix TEXT NOT NULL DEFAULT '!',
+  welcome_enabled INTEGER NOT NULL DEFAULT 0,
+  welcome_channel_id TEXT,
+  welcome_message TEXT NOT NULL DEFAULT 'أهلاً {user} نورت السيرفر! 🐼',
+  welcome_image_url TEXT,
+  tickets_enabled INTEGER NOT NULL DEFAULT 0,
+  ticket_category_id TEXT,
+  ticket_log_channel_id TEXT,
+  levels_enabled INTEGER NOT NULL DEFAULT 0,
+  xp_multiplier REAL NOT NULL DEFAULT 1,
+  applications_enabled INTEGER NOT NULL DEFAULT 0,
+  logs_channel_id TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ticket_types (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  description TEXT,
+  emoji TEXT,
+  category_id TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (guild_id) REFERENCES guild_settings(guild_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  channel_id TEXT,
+  user_id TEXT NOT NULL,
+  ticket_type_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  closed_at TEXT,
+  FOREIGN KEY (guild_id) REFERENCES guild_settings(guild_id) ON DELETE CASCADE,
+  FOREIGN KEY (ticket_type_id) REFERENCES ticket_types(id)
+);
+
+CREATE TABLE IF NOT EXISTS level_profiles (
+  guild_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  xp INTEGER NOT NULL DEFAULT 0,
+  level INTEGER NOT NULL DEFAULT 0,
+  messages_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (guild_id, user_id),
+  FOREIGN KEY (guild_id) REFERENCES guild_settings(guild_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  actor_id TEXT,
+  action TEXT NOT NULL,
+  details TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (guild_id) REFERENCES guild_settings(guild_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_tickets_guild_status ON tickets(guild_id, status);
+CREATE INDEX IF NOT EXISTS idx_levels_guild_xp ON level_profiles(guild_id, xp DESC);
