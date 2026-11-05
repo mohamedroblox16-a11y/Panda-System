@@ -60,21 +60,25 @@ export class PandaGateway {
     try{
       const ws=new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
       this.ws=ws;
-      ws.addEventListener("message",e=>this.onMessage(e.data,ws).catch(err=>console.error("Gateway message error",err)));
-      ws.addEventListener("close",e=>this.onClose(e,ws));
-      ws.addEventListener("error",()=>this.setStatus("error","حدث خطأ في اتصال Gateway."));
+      ws.addEventListener("open",()=>console.log("[PandaGateway] WebSocket transport opened; waiting for Discord HELLO."));
+      ws.addEventListener("message",e=>this.onMessage(e.data,ws).catch(err=>console.error("[PandaGateway] message handler failed",err)));
+      ws.addEventListener("close",e=>{console.error("[PandaGateway] WebSocket closed", {code:e.code,reason:e.reason,wasClean:e.wasClean});this.onClose(e,ws);});
+      ws.addEventListener("error",e=>{console.error("[PandaGateway] WebSocket transport error",e?.message||"no error message");this.setStatus("error","حدث خطأ في اتصال Gateway؛ راجع Worker Logs لمعرفة التفاصيل.");});
       await this.ctx.storage.setAlarm(Date.now()+14*60*1000);
     }catch(e){await this.setStatus("error","تعذر فتح اتصال Gateway: "+String(e).slice(0,180));await this.ctx.storage.setAlarm(Date.now()+30000);}
   }
   send(data){if(this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify(data));}
   async onMessage(raw,ws){
     if(ws!==this.ws)return;
-    let p;try{p=JSON.parse(raw);}catch{return;}
+    let p;try{p=JSON.parse(raw);}catch{console.error("[PandaGateway] received a non-JSON Gateway frame");return;}
+    console.log("[PandaGateway] Gateway frame", {op:p.op,event:p.t||null,sequence:p.s??null});
     if(p.s!==null&&p.s!==undefined)this.seq=p.s;
     if(p.op===10){
       const ms=p.d.heartbeat_interval;
+      console.log("[PandaGateway] received HELLO", {heartbeat_interval:ms});
       if(this.heartbeat)clearInterval(this.heartbeat);
       this.heartbeat=setInterval(()=>{this.send({op:1,d:this.seq});},ms);
+      console.log("[PandaGateway] sending IDENTIFY", {intents:1|2|512|32768});
       this.send({op:2,d:{token:this.env.DISCORD_BOT_TOKEN,intents:1|2|512|32768,properties:{"$os":"cloudflare","$browser":"panda-system","$device":"panda-system"}}});
       return;
     }
@@ -83,8 +87,8 @@ export class PandaGateway {
     if(p.op===9){await this.setStatus("reconnecting","جلسة Gateway غير صالحة؛ إعادة المحاولة.");this.seq=null;await this.ctx.storage.setAlarm(Date.now()+5000);return;}
     if(p.op===11){this.lastAck=Date.now();return;}
     if(p.op===0){
-      if(p.t==="READY"){await this.setStatus("online","اتصال Discord Gateway نشط.");this.retry=0;}
-      if(p.t==="RESUMED")await this.setStatus("online","تم استئناف اتصال Discord Gateway.");
+      if(p.t==="READY"){console.log("[PandaGateway] READY received; bot is online.");await this.setStatus("online","اتصال Discord Gateway نشط.");this.retry=0;}
+      if(p.t==="RESUMED"){console.log("[PandaGateway] RESUMED received; bot session restored.");await this.setStatus("online","تم استئناف اتصال Discord Gateway.");}
       if(p.t==="GUILD_MEMBER_ADD")await this.welcome(p.d);
       if(p.t==="MESSAGE_CREATE")await this.addXp(p.d);
     }
@@ -92,7 +96,7 @@ export class PandaGateway {
   async onClose(e,ws){
     if(ws!==this.ws)return;
     if(this.heartbeat){clearInterval(this.heartbeat);this.heartbeat=null;}
-    const detail=e.code===4014?"Discord رفض Intents؛ فعّل Server Members Intent وMessage Content Intent من Developer Portal.":e.code===4004?"Bot Token غير صحيح.":("انقطع الاتصال (code "+e.code+"). إعادة المحاولة.");
+    const detail=e.code===4014?"Discord رفض Intents؛ فعّل Server Members Intent وMessage Content Intent من Developer Portal.":e.code===4004?"Bot Token غير صحيح.":("انقطع الاتصال (code "+e.code+(e.reason?", reason: "+e.reason:"")+"). إعادة المحاولة.");
     await this.setStatus("reconnecting",detail);
     this.retry=Math.min(this.retry+1,6);
     await this.ctx.storage.setAlarm(Date.now()+Math.min(60000,5000*this.retry));
