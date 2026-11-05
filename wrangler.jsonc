@@ -7,7 +7,7 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/interactions"]
+    "run_worker_first": ["/api/*", "/auth/*", "/interactions"]
   },
   "d1_databases": [
     {
@@ -17,7 +17,8 @@
     }
   ],
   "vars": {
-    "DISCORD_APPLICATION_ID": "SET_IN_CLOUDFLARE",
-    "PUBLIC_BASE_URL": "https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev"
+    "DISCORD_CLIENT_ID": "1567950230257926224",
+    "DISCORD_APPLICATION_ID": "1567950230257926224",
+    "PUBLIC_BASE_URL": "https://SET-YOUR-WORKER-URL.workers.dev"
   }
 }
