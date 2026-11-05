@@ -43,6 +43,8 @@ if(publishMatch&&req.method==="POST"){
  const data=await resp.json().catch(()=>({}));
  if(!resp.ok){console.error("[Tickets] panel publish failed",resp.status,data);return json({error:resp.status===403?"البوت لا يملك صلاحية إرسال الرسائل واستخدام الأزرار في القناة.":resp.status===404?"القناة غير موجودة أو البوت ليس داخل السيرفر.":"Discord رفض نشر اللوحة (HTTP "+resp.status+")."},502);}
  await env.DB.prepare("INSERT INTO ticket_panels(guild_id,channel_id,message,button_label,button_emoji) VALUES(?,?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,message=excluded.message,button_label=excluded.button_label,button_emoji=excluded.button_emoji,updated_at=CURRENT_TIMESTAMP").bind(g.id,channelId,body.content,String(b.button_label||"فتح تذكرة").slice(0,50),String(b.button_emoji||"🎫").slice(0,16)).run();
+ await env.DB.prepare("INSERT OR IGNORE INTO guild_settings(guild_id,guild_name) VALUES(?,?)").bind(g.id,g.name).run();
+ await env.DB.prepare("UPDATE guild_settings SET tickets_enabled=1 WHERE guild_id=?").bind(g.id).run();
  return json({ok:true,message_id:data.id,channel_id:channelId});
 }
 
@@ -89,6 +91,7 @@ async function handleInteraction(i,env){
    if(!t||t.status!=="open")return json({type:4,data:{content:"التذكرة مغلقة بالفعل أو غير موجودة.",flags:64}});
    const p=BigInt(member.permissions||"0"),staff=(p&8n)!==0n||(p&32n)!==0n;
    if(t.user_id!==user.id&&!staff)return json({type:4,data:{content:"صاحب التذكرة أو الإدارة فقط يمكنهم إغلاقها.",flags:64}});
+   const lock=await fetch("https://discord.com/api/v10/channels/"+t.channel_id+"/permissions/"+t.user_id,{method:"PUT",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify({type:1,deny:"2048"})});if(!lock.ok)console.error("[Tickets] could not lock ticket channel",lock.status,await lock.text().catch(()=>""));
    await env.DB.prepare("UPDATE tickets SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=?").bind(t.id).run();
    await fetch("https://discord.com/api/v10/channels/"+t.channel_id+"/messages",{method:"POST",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify({content:"🔒 تم إغلاق التذكرة بواسطة <@"+user.id+">."})});
    return json({type:7,data:{content:"تم إغلاق التذكرة.",components:[]}});
