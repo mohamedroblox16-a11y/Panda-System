@@ -8,7 +8,8 @@
     "deploy": "wrangler deploy",
     "db:create": "wrangler d1 create panda-system-db",
     "db:migrate:local": "wrangler d1 execute panda-system-db --local --file=./schema.sql",
-    "db:migrate:remote": "wrangler d1 execute panda-system-db --remote --file=./schema.sql"
+    "db:migrate:remote": "wrangler d1 execute panda-system-db --remote --file=./schema.sql",
+    "register:commands": "node scripts/register-commands.js"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
