@@ -170,19 +170,19 @@ async function createTicketForInteraction(i, env) {
     const bot = await botRes.json();
     const category = type.category_id || settings?.ticket_category_id;
 
-    // Allocate a unique, increasing ticket number per server.
+    // Allocate a separate increasing ticket number for each ticket button/type.
     await env.DB.prepare(
-      "CREATE TABLE IF NOT EXISTS ticket_counters (guild_id TEXT PRIMARY KEY, next_number INTEGER NOT NULL DEFAULT 0)"
+      "CREATE TABLE IF NOT EXISTS ticket_type_counters (guild_id TEXT NOT NULL,type_id INTEGER NOT NULL,next_number INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(guild_id,type_id))"
     ).run();
     const counter = await env.DB.prepare(
-      "INSERT INTO ticket_counters(guild_id,next_number) VALUES(?,1) " +
-      "ON CONFLICT(guild_id) DO UPDATE SET next_number=next_number+1 RETURNING next_number"
-    ).bind(guild).first();
+      "INSERT INTO ticket_type_counters(guild_id,type_id,next_number) VALUES(?,?,1) " +
+      "ON CONFLICT(guild_id,type_id) DO UPDATE SET next_number=next_number+1 RETURNING next_number"
+    ).bind(guild, type.id).first();
     const ticketNumber = Number(counter?.next_number || 1);
     const buttonSlug = String(type.label || "ticket")
       .normalize("NFKC")
       .toLowerCase()
-      .replace(/[^\\p{L}\\p{N}_-]+/gu, "-")
+      .replace(/[^\p{L}\p{N}_-]+/gu, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 85) || "ticket";
     const channelBody = {
@@ -268,6 +268,54 @@ async function createTicketForInteraction(i, env) {
   }
 }
 
+async function closeTicketForInteraction(i, env) {
+  const guild = i.guild_id;
+  const member = i.member || {};
+  const user = member.user || i.user || {};
+  if (!guild || !user.id) return "تعذر تحديد السيرفر أو العضو.";
+  if (!env.DISCORD_BOT_TOKEN) return "إعدادات البوت ناقصة على Cloudflare.";
+
+  const close = String(i.data?.custom_id || "").match(/^panda:ticket:close:(\\d+)$/);
+  if (!close) return "زر إغلاق التذكرة غير صالح.";
+
+  const ticket = await env.DB.prepare(
+    "SELECT id,user_id,channel_id,status FROM tickets WHERE id=? AND guild_id=?"
+  ).bind(Number(close[1]), guild).first();
+
+  if (!ticket || ticket.status !== "open") return "التذكرة مغلقة بالفعل أو غير موجودة.";
+
+  const permissions = BigInt(member.permissions || "0");
+  const staff = (permissions & 8n) !== 0n || (permissions & 32n) !== 0n;
+  if (ticket.user_id !== user.id && !staff) return "صاحب التذكرة أو الإدارة فقط يمكنهم إغلاقها.";
+
+  // Keep the ticket visible to its owner, but remove their Send Messages permission.
+  // Discord's Modify Channel Permissions endpoint requires Manage Roles (or Administrator).
+  const lock = await fetch(
+    "https://discord.com/api/v10/channels/" + ticket.channel_id + "/permissions/" + ticket.user_id,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: "Bot " + env.DISCORD_BOT_TOKEN,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ type: 1, allow: "66560", deny: "2048" })
+    }
+  );
+
+  if (!lock.ok) {
+    const detail = await lock.text().catch(() => "");
+    console.error("[Tickets] could not lock ticket channel", lock.status, detail.slice(0, 500));
+    if (lock.status === 403) return "مش قادر أقفل التذكرة: ادّي البوت صلاحية Manage Roles أو Administrator.";
+    return "Discord رفض قفل التذكرة (HTTP " + lock.status + "). راجع سجلات Cloudflare.";
+  }
+
+  await env.DB.prepare(
+    "UPDATE tickets SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=?"
+  ).bind(ticket.id).run();
+
+  return "🔒 تم إغلاق التذكرة بواسطة <@" + user.id + ">.";
+}
+
 async function handleInteraction(i, env, ctx) {
   if (i.type === 1) return json({ type: 1 });
 
@@ -309,53 +357,26 @@ async function handleInteraction(i, env, ctx) {
       return json({ type: 5, data: { flags: 64 } });
     }
 
-    const close = customId.match(/^panda:ticket:close:(\d+)$/);
+    const close = customId.match(/^panda:ticket:close:\\d+$/);
     if (close) {
-      const ticket = await env.DB.prepare(
-        "SELECT id,user_id,channel_id,status FROM tickets WHERE id=? AND guild_id=?"
-      ).bind(Number(close[1]), guild).first();
-
-      if (!ticket || ticket.status !== "open") {
-        return json({ type: 4, data: { content: "التذكرة مغلقة بالفعل أو غير موجودة.", flags: 64 } });
+      if (!ctx?.waitUntil) {
+        return json({ type: 4, data: { content: "تعذر تشغيل إغلاق التذكرة حاليًا. حاول مرة أخرى.", flags: 64 } });
       }
 
-      const permissions = BigInt(member.permissions || "0");
-      const staff = (permissions & 8n) !== 0n || (permissions & 32n) !== 0n;
-      if (ticket.user_id !== user.id && !staff) {
-        return json({ type: 4, data: { content: "صاحب التذكرة أو الإدارة فقط يمكنهم إغلاقها.", flags: 64 } });
-      }
+      // Defer the component update immediately, then lock the channel in the background.
+      ctx.waitUntil((async () => {
+        const content = await closeTicketForInteraction(i, env);
+        await editInteractionReply(i, { content, components: [] });
+      })().catch(async error => {
+        console.error("[Tickets] close background task failed", error?.stack || error);
+        await editInteractionReply(i, {
+          content: "حصل خطأ أثناء إغلاق التذكرة. راجع سجلات Cloudflare.",
+          components: []
+        });
+      }));
 
-      const lock = await fetch(
-        "https://discord.com/api/v10/channels/" + ticket.channel_id + "/permissions/" + ticket.user_id,
-        {
-          method: "PUT",
-          headers: {
-            Authorization: "Bot " + env.DISCORD_BOT_TOKEN,
-            "content-type": "application/json"
-          },
-          body: JSON.stringify({ type: 1, deny: "2048" })
-        }
-      );
-
-      if (!lock.ok) {
-        console.error("[Tickets] could not lock ticket channel", lock.status, await lock.text().catch(() => ""));
-        return json({ type: 4, data: { content: "لم أستطع قفل القناة. تأكد من صلاحية Manage Roles / Manage Channels.", flags: 64 } });
-      }
-
-      await env.DB.prepare(
-        "UPDATE tickets SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=?"
-      ).bind(ticket.id).run();
-
-      await fetch("https://discord.com/api/v10/channels/" + ticket.channel_id + "/messages", {
-        method: "POST",
-        headers: {
-          Authorization: "Bot " + env.DISCORD_BOT_TOKEN,
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({ content: "🔒 تم إغلاق التذكرة بواسطة <@" + user.id + ">." })
-      });
-
-      return json({ type: 7, data: { content: "تم إغلاق التذكرة.", components: [] } });
+      return json({ type: 6 });
+    }
     }
   }
 
