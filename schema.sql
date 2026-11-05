@@ -9,3 +9,4 @@ CREATE TABLE IF NOT EXISTS dashboard_sessions (token_hash TEXT PRIMARY KEY,user_
 CREATE INDEX IF NOT EXISTS idx_tickets_guild_status ON tickets(guild_id,status);
 CREATE INDEX IF NOT EXISTS idx_levels_guild_xp ON level_profiles(guild_id,xp DESC);
 CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expiry ON dashboard_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS ticket_panels (guild_id TEXT PRIMARY KEY,channel_id TEXT,message TEXT NOT NULL DEFAULT 'اختار نوع التذكرة المناسب من الأزرار بالأسفل.',button_label TEXT NOT NULL DEFAULT 'فتح تذكرة',button_emoji TEXT NOT NULL DEFAULT '🎫',updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(guild_id) REFERENCES guild_settings(guild_id) ON DELETE CASCADE);
