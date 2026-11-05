@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "panda-system-db",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+      "database_id": "abf9be1d-b6b2-45e2-8ffc-a47071b7bb17"
     }
   ],
   "vars": {
