@@ -7,7 +7,11 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/auth/*", "/interactions"]
+    "run_worker_first": [
+      "/api/*",
+      "/auth/*",
+      "/interactions"
+    ]
   },
   "d1_databases": [
     {
@@ -19,5 +23,26 @@
   "vars": {
     "DISCORD_CLIENT_ID": "1567950230257926224",
     "DISCORD_APPLICATION_ID": "1567950230257926224"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PANDA_GATEWAY",
+        "class_name": "PandaGateway"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "PandaGateway"
+      ]
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
   }
 }
