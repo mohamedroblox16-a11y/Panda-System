@@ -26,6 +26,26 @@ if(tm&&["GET","POST","PATCH","DELETE"].includes(req.method)){
  if(!tm[2])return json({error:"missing_id"},400);
  await env.DB.prepare("UPDATE ticket_types SET label=?,description=?,emoji=?,category_id=?,enabled=? WHERE guild_id=? AND id=?").bind(label,description,emoji,category_id||null,enabled,g.id,Number(tm[2])).run();return json({ok:true});
 }
+
+const publishMatch=u.pathname.match(/^\\/api\\/guilds\\/([0-9]+)\\/ticket-panel\\/publish$/);
+if(publishMatch&&req.method==="POST"){
+ const s=await session(req,env);if(!s)return json({error:"سجّل الدخول أولاً."},401);
+ const g=s.guilds.find(x=>x.id===publishMatch[1]&&x.canManage);if(!g)return json({error:"ليس لديك صلاحية إدارة السيرفر."},403);
+ if(!env.DISCORD_BOT_TOKEN)return json({error:"Bot Token غير موجود في Cloudflare."},503);
+ let b;try{b=await req.json()}catch{return json({error:"بيانات غير صالحة."},400)}
+ const channelId=String(b.channel_id||"").trim();if(!/^\\d{17,20}$/.test(channelId))return json({error:"اختار قناة صحيحة."},400);
+ const rows=await env.DB.prepare("SELECT id,label,emoji FROM ticket_types WHERE guild_id=? AND enabled=1 ORDER BY sort_order,id LIMIT 25").bind(g.id).all();
+ if(!rows.results?.length)return json({error:"أضف نوع تذكرة واحدًا على الأقل قبل النشر."},400);
+ const types=rows.results,components=[];
+ for(let i=0;i<types.length;i+=5)components.push({type:1,components:types.slice(i,i+5).map(t=>({type:2,style:1,label:String(t.label).slice(0,80),emoji:t.emoji?{name:t.emoji}:undefined,custom_id:"panda:ticket:create:"+t.id}))});
+ const body={content:String(b.message||"اختار نوع التذكرة المناسب من الأزرار بالأسفل.").slice(0,1800),components,allowed_mentions:{parse:[]}};
+ const resp=await fetch("https://discord.com/api/v10/channels/"+channelId+"/messages",{method:"POST",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify(body)});
+ const data=await resp.json().catch(()=>({}));
+ if(!resp.ok){console.error("[Tickets] panel publish failed",resp.status,data);return json({error:resp.status===403?"البوت لا يملك صلاحية إرسال الرسائل واستخدام الأزرار في القناة.":resp.status===404?"القناة غير موجودة أو البوت ليس داخل السيرفر.":"Discord رفض نشر اللوحة (HTTP "+resp.status+")."},502);}
+ await env.DB.prepare("INSERT INTO ticket_panels(guild_id,channel_id,message,button_label,button_emoji) VALUES(?,?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,message=excluded.message,button_label=excluded.button_label,button_emoji=excluded.button_emoji,updated_at=CURRENT_TIMESTAMP").bind(g.id,channelId,body.content,String(b.button_label||"فتح تذكرة").slice(0,50),String(b.button_emoji||"🎫").slice(0,16)).run();
+ return json({ok:true,message_id:data.id,channel_id:channelId});
+}
+
 const pm=u.pathname.match(/^\/api\/guilds\/([0-9]+)\/ticket-panel$/);
 if(pm&&(req.method==="GET"||req.method==="PATCH")){
  const s=await session(req,env);if(!s)return json({error:"unauthorized"},401);
@@ -36,7 +56,46 @@ if(pm&&(req.method==="GET"||req.method==="PATCH")){
  await env.DB.prepare("INSERT INTO ticket_panels(guild_id,channel_id,message,button_label,button_emoji) VALUES(?,?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,message=excluded.message,button_label=excluded.button_label,button_emoji=excluded.button_emoji,updated_at=CURRENT_TIMESTAMP").bind(...vals).run();return json({ok:true});
 }
 const m=u.pathname.match(/^\/api\/guilds\/([0-9]+)\/settings$/);if(m&&(req.method==="GET"||req.method==="PATCH")){const s=await session(req,env);if(!s)return json({error:"unauthorized"},401);const g=s.guilds.find(x=>x.id===m[1]&&x.canManage);if(!g)return json({error:"forbidden"},403);await env.DB.prepare("INSERT OR IGNORE INTO guild_settings(guild_id,guild_name) VALUES(?,?)").bind(g.id,g.name).run();if(req.method==="GET")return json({settings:await env.DB.prepare("SELECT * FROM guild_settings WHERE guild_id=?").bind(g.id).first()});let b;try{b=await req.json();}catch{return json({error:"invalid_json"},400);}const allowed=["language","prefix","welcome_enabled","welcome_channel_id","welcome_message","welcome_image_url","tickets_enabled","ticket_category_id","ticket_log_channel_id","levels_enabled","xp_multiplier","applications_enabled","logs_channel_id"],entries=Object.entries(b).filter(([k])=>allowed.includes(k));if(!entries.length)return json({error:"no_valid_fields"},400);const numeric=["welcome_enabled","tickets_enabled","levels_enabled","applications_enabled"];for(const [k,v] of entries){if(numeric.includes(k)&&![0,1,true,false].includes(v))return json({error:"invalid_value",field:k},400);if(k==="xp_multiplier"&&(!Number.isFinite(Number(v))||Number(v)<0.1||Number(v)>100))return json({error:"invalid_multiplier"},400);if(typeof v==="string"&&v.length>2000)return json({error:"too_long",field:k},400);}const sets=entries.map(([k])=>k+"=?").join(","),vals=entries.map(([k,v])=>numeric.includes(k)?(v===true?1:v===false?0:v):v);await env.DB.prepare("UPDATE guild_settings SET "+sets+",updated_at=CURRENT_TIMESTAMP WHERE guild_id=?").bind(...vals,g.id).run();await env.DB.prepare("INSERT INTO audit_logs(guild_id,actor_id,action,details) VALUES(?,?,?,?)").bind(g.id,s.id,"dashboard_settings_updated",JSON.stringify(entries.map(([k])=>k))).run();return json({settings:await env.DB.prepare("SELECT * FROM guild_settings WHERE guild_id=?").bind(g.id).first()});}return json({error:"not_found"},404);}
-async function handleInteraction(i,env){if(i.type===1)return json({type:1});if(i.type===2){const n=i.data?.name;if(n==="panda")return json({type:4,data:{content:"🐼 Panda System متصل.",flags:64}});if(n==="setup"){if(!i.guild_id)return json({type:4,data:{content:"استخدم الأمر داخل سيرفر.",flags:64}});await env.DB.prepare("INSERT OR IGNORE INTO guild_settings(guild_id) VALUES(?)").bind(i.guild_id).run();return json({type:4,data:{content:"تم إنشاء إعدادات Panda System الأساسية لهذا السيرفر.",flags:64}});}}return json({type:4,data:{content:"التفاعل ده لسه مش متاح.",flags:64}});}
+async function handleInteraction(i,env){
+ if(i.type===1)return json({type:1});
+ if(i.type===2){const n=i.data?.name;if(n==="panda")return json({type:4,data:{content:"🐼 Panda System متصل.",flags:64}});if(n==="setup"){if(!i.guild_id)return json({type:4,data:{content:"استخدم الأمر داخل سيرفر.",flags:64}});await env.DB.prepare("INSERT OR IGNORE INTO guild_settings(guild_id) VALUES(?)").bind(i.guild_id).run();return json({type:4,data:{content:"تم إنشاء إعدادات Panda System الأساسية لهذا السيرفر.",flags:64}});}}
+ if(i.type===3){
+  const cid=String(i.data?.custom_id||""),guild=i.guild_id,member=i.member||{},user=member.user||i.user||{};
+  if(!guild||!user.id)return json({type:4,data:{content:"تعذر تحديد السيرفر أو العضو.",flags:64}});
+  const create=cid.match(/^panda:ticket:create:(\\d+)$/);
+  if(create){
+   const type=await env.DB.prepare("SELECT id,label,category_id FROM ticket_types WHERE id=? AND guild_id=? AND enabled=1").bind(Number(create[1]),guild).first();
+   if(!type)return json({type:4,data:{content:"نوع التذكرة غير متاح.",flags:64}});
+   const old=await env.DB.prepare("SELECT channel_id FROM tickets WHERE guild_id=? AND user_id=? AND status='open' LIMIT 1").bind(guild,user.id).first();
+   if(old?.channel_id)return json({type:4,data:{content:"عندك تذكرة مفتوحة بالفعل: <#"+old.channel_id+">",flags:64}});
+   const settings=await env.DB.prepare("SELECT ticket_category_id,tickets_enabled FROM guild_settings WHERE guild_id=?").bind(guild).first();
+   if(settings?.tickets_enabled===0)return json({type:4,data:{content:"نظام التذاكر متوقف من لوحة التحكم.",flags:64}});
+   const botRes=await fetch("https://discord.com/api/v10/users/@me",{headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN}});
+   if(!botRes.ok)return json({type:4,data:{content:"تعذر التحقق من البوت.",flags:64}});
+   const bot=await botRes.json(),category=type.category_id||settings?.ticket_category_id;
+   const channelBody={name:"ticket-"+String(user.username||"member").toLowerCase().replace(/[^a-z0-9-]/g,"").slice(0,75),type:0,permission_overwrites:[{id:guild,type:0,deny:"1024"},{id:user.id,type:1,allow:"3072"},{id:bot.id,type:1,allow:"3072"}]};
+   if(category)channelBody.parent_id=category;
+   const cr=await fetch("https://discord.com/api/v10/guilds/"+guild+"/channels",{method:"POST",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify(channelBody)});
+   const channel=await cr.json().catch(()=>({}));
+   if(!cr.ok){console.error("[Tickets] create channel",cr.status,channel);return json({type:4,data:{content:cr.status===403?"البوت محتاج صلاحية Manage Channels. راجع صلاحياته.":"Discord رفض إنشاء القناة. تأكد من صلاحيات البوت والفئة.",flags:64}});}
+   const inserted=await env.DB.prepare("INSERT INTO tickets(guild_id,channel_id,user_id,ticket_type_id,status) VALUES(?,?,?,?,'open')").bind(guild,channel.id,user.id,type.id).run(),ticketId=inserted.meta?.last_row_id;
+   const msg={content:"🎫 **"+type.label+"**\\nأهلاً <@"+user.id+">، اكتب تفاصيل طلبك هنا.",components:[{type:1,components:[{type:2,style:4,label:"إغلاق التذكرة",emoji:{name:"🔒"},custom_id:"panda:ticket:close:"+ticketId}]}],allowed_mentions:{users:[user.id]}};
+   await fetch("https://discord.com/api/v10/channels/"+channel.id+"/messages",{method:"POST",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify(msg)});
+   return json({type:4,data:{content:"تم إنشاء تذكرتك: <#"+channel.id+">",flags:64}});
+  }
+  const close=cid.match(/^panda:ticket:close:(\\d+)$/);
+  if(close){
+   const t=await env.DB.prepare("SELECT id,user_id,channel_id,status FROM tickets WHERE id=? AND guild_id=?").bind(Number(close[1]),guild).first();
+   if(!t||t.status!=="open")return json({type:4,data:{content:"التذكرة مغلقة بالفعل أو غير موجودة.",flags:64}});
+   const p=BigInt(member.permissions||"0"),staff=(p&8n)!==0n||(p&32n)!==0n;
+   if(t.user_id!==user.id&&!staff)return json({type:4,data:{content:"صاحب التذكرة أو الإدارة فقط يمكنهم إغلاقها.",flags:64}});
+   await env.DB.prepare("UPDATE tickets SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=?").bind(t.id).run();
+   await fetch("https://discord.com/api/v10/channels/"+t.channel_id+"/messages",{method:"POST",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify({content:"🔒 تم إغلاق التذكرة بواسطة <@"+user.id+">."})});
+   return json({type:7,data:{content:"تم إغلاق التذكرة.",components:[]}});
+  }
+ }
+ return json({type:4,data:{content:"التفاعل ده لسه مش متاح.",flags:64}});
+}
 
 export class PandaGateway {
   constructor(ctx, env) {
