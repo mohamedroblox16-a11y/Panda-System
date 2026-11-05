@@ -48,7 +48,7 @@ export class PandaGateway {
   async fetch(req){
     const path=new URL(req.url).pathname;
     if(path==="/status")return json(await this.status());
-    if(path==="/start"){await this.connect(true);return json({ok:true,status:await this.status()});}
+    if(path==="/start"){await this.connect(false);return json({ok:true,status:await this.status()});}
     return json({error:"not_found"},404);
   }
   async connect(force=false){
