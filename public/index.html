@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10131f">
+  <title>Panda System | Dashboard</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0d1019;--panel:#171c2a;--muted:#9ba5ba;--line:#293248;--accent:#8b7cff}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 80% 0%,#29214c 0,transparent 38%),var(--bg);color:#f5f6fb;font-family:Tahoma,Arial,sans-serif;min-height:100vh}
+    header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 7%;background:#10131dcc}
+    .brand{font-size:22px;font-weight:800}.brand span{color:var(--accent)}.status{font-size:13px;color:#b9c2d5}
+    main{max-width:1080px;margin:70px auto;padding:0 22px}.hero{text-align:center;margin-bottom:42px}.panda{font-size:54px}.hero h1{font-size:clamp(30px,5vw,48px);margin:12px 0}.hero p{color:var(--muted);line-height:1.9;max-width:650px;margin:auto}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.card{background:linear-gradient(145deg,#1a2030,#141927);border:1px solid var(--line);border-radius:18px;padding:22px}.card h3{margin:0 0 10px}.card p{color:var(--muted);font-size:14px;line-height:1.8;margin:0}
+    .notice{margin-top:22px;border:1px solid #6654b5;background:#211d3a;padding:17px 20px;border-radius:14px;color:#d8d1ff;line-height:1.8;font-size:14px}
+    footer{text-align:center;color:#778198;font-size:12px;padding:38px}
+  </style>
+</head>
+<body>
+  <header><div class="brand">🐼 <span>PANDA</span> SYSTEM</div><div class="status">Cloudflare Edition · Initial Build</div></header>
+  <main>
+    <section class="hero">
+      <div class="panda">🐼</div>
+      <h1>لوحة تحكم Panda System</h1>
+      <p>مكان واحد لإدارة أنظمة سيرفرك: التذاكر، الترحيب، المستويات، التقديمات، وسجلات الإدارة. دي النسخة التأسيسية، وربط تسجيل دخول Discord وإعدادات السيرفرات هيكون في المرحلة التالية.</p>
+    </section>
+    <section class="grid">
+      <article class="card"><h3>🎫 Tickets</h3><p>أنواع تذاكر قابلة للتخصيص، قنوات الدعم، وسجلات التذاكر.</p></article>
+      <article class="card"><h3>👋 Welcome</h3><p>رسالة ترحيب وصورة قابلة للتخصيص عند استقبال حدث دخول العضو.</p></article>
+      <article class="card"><h3>🏆 Levels</h3><p>إعدادات XP والمضاعفات والترتيب، وفق الأحداث المتاحة في Cloudflare.</p></article>
+      <article class="card"><h3>🛡️ Applications</h3><p>إعداد نظام تقديم الإدارة ومراجعة الطلبات.</p></article>
+      <article class="card"><h3>📋 Logs</h3><p>تجهيز سجل تغييرات وإجراءات الأنظمة داخل كل سيرفر.</p></article>
+      <article class="card"><h3>⚙️ Server Settings</h3><p>إعدادات مستقلة لكل سيرفر مع حفظها في قاعدة D1.</p></article>
+    </section>
+    <div class="notice">تنبيه: Cloudflare Workers لا تحتفظ باتصال Discord Gateway دائم. لذلك استقبال كل رسائل الأعضاء لحساب XP تلقائيًا، وأحداث دخول الأعضاء المباشرة، يحتاجان بديلًا أو بيئة تشغيل أخرى. الأوامر والتفاعلات المدعومة عبر Discord Interactions مناسبة لهذا التصميم.</div>
+  </main>
+  <footer>Panda System · Built for Discord communities</footer>
+</body>
+</html>
