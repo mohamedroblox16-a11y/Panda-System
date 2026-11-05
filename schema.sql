@@ -13,3 +13,5 @@ CREATE TABLE IF NOT EXISTS ticket_panels (guild_id TEXT PRIMARY KEY,channel_id T
 
 CREATE TABLE IF NOT EXISTS ticket_panel_posts (guild_id TEXT PRIMARY KEY,channel_id TEXT NOT NULL,message_id TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS ticket_counters (guild_id TEXT PRIMARY KEY,next_number INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE IF NOT EXISTS ticket_type_counters (guild_id TEXT NOT NULL,type_id INTEGER NOT NULL,next_number INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(guild_id,type_id));
