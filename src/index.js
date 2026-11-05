@@ -36,16 +36,33 @@ if(publishMatch&&req.method==="POST"){
  const channelId=String(b.channel_id||"").trim();if(!/^\d{17,20}$/.test(channelId))return json({error:"اختار قناة صحيحة."},400);
  const rows=await env.DB.prepare("SELECT id,label,emoji FROM ticket_types WHERE guild_id=? AND enabled=1 ORDER BY sort_order,id LIMIT 25").bind(g.id).all();
  if(!rows.results?.length)return json({error:"أضف نوع تذكرة واحدًا على الأقل قبل النشر."},400);
+ await env.DB.prepare("CREATE TABLE IF NOT EXISTS ticket_panel_posts (guild_id TEXT PRIMARY KEY,channel_id TEXT NOT NULL,message_id TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+ const previous=await env.DB.prepare("SELECT channel_id,message_id FROM ticket_panel_posts WHERE guild_id=?").bind(g.id).first();
  const types=rows.results,components=[];
  for(let i=0;i<types.length;i+=5)components.push({type:1,components:types.slice(i,i+5).map(t=>({type:2,style:1,label:String(t.label).slice(0,80),emoji:t.emoji?{name:t.emoji}:undefined,custom_id:"panda:ticket:create:"+t.id}))});
  const body={content:String(b.message||"اختار نوع التذكرة المناسب من الأزرار بالأسفل.").slice(0,1800),components,allowed_mentions:{parse:[]}};
- const resp=await fetch("https://discord.com/api/v10/channels/"+channelId+"/messages",{method:"POST",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify(body)});
- const data=await resp.json().catch(()=>({}));
- if(!resp.ok){console.error("[Tickets] panel publish failed",resp.status,data);return json({error:resp.status===403?"البوت لا يملك صلاحية إرسال الرسائل واستخدام الأزرار في القناة.":resp.status===404?"القناة غير موجودة أو البوت ليس داخل السيرفر.":"Discord رفض نشر اللوحة (HTTP "+resp.status+")."},502);}
+ let response,data={},updated=false;
+ if(previous&&previous.channel_id===channelId){
+   response=await fetch("https://discord.com/api/v10/channels/"+channelId+"/messages/"+previous.message_id,{method:"PATCH",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify(body)});
+   if(response.status===404){response=null;}
+   else if(response.ok){data=await response.json().catch(()=>({}));updated=true;}
+   else {const error=await response.json().catch(()=>({}));console.error("[Tickets] panel update failed",response.status,error);return json({error:response.status===403?"البوت لا يملك صلاحية تعديل رسالة اللوحة.":"Discord رفض تحديث لوحة التذاكر (HTTP "+response.status+")."},502);}
+ }
+ if(!response){
+   response=await fetch("https://discord.com/api/v10/channels/"+channelId+"/messages",{method:"POST",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify(body)});
+   data=await response.json().catch(()=>({}));
+   if(!response.ok){console.error("[Tickets] panel publish failed",response.status,data);return json({error:response.status===403?"البوت لا يملك صلاحية إرسال الرسائل واستخدام الأزرار في القناة.":response.status===404?"القناة غير موجودة أو البوت ليس داخل السيرفر.":"Discord رفض نشر اللوحة (HTTP "+response.status+")."},502);}
+ }
+ if(previous&&previous.channel_id!==channelId){
+   const oldDelete=await fetch("https://discord.com/api/v10/channels/"+previous.channel_id+"/messages/"+previous.message_id,{method:"DELETE",headers:{Authorization:"Bot "+env.DISCORD_BOT_TOKEN}});
+   if(!oldDelete.ok&&oldDelete.status!==404)console.warn("[Tickets] old panel could not be removed",oldDelete.status);
+ }
+ const messageId=updated?previous.message_id:data.id;
+ await env.DB.prepare("INSERT INTO ticket_panel_posts(guild_id,channel_id,message_id) VALUES(?,?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,message_id=excluded.message_id,updated_at=CURRENT_TIMESTAMP").bind(g.id,channelId,messageId).run();
  await env.DB.prepare("INSERT INTO ticket_panels(guild_id,channel_id,message,button_label,button_emoji) VALUES(?,?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,message=excluded.message,button_label=excluded.button_label,button_emoji=excluded.button_emoji,updated_at=CURRENT_TIMESTAMP").bind(g.id,channelId,body.content,String(b.button_label||"فتح تذكرة").slice(0,50),String(b.button_emoji||"🎫").slice(0,16)).run();
  await env.DB.prepare("INSERT OR IGNORE INTO guild_settings(guild_id,guild_name) VALUES(?,?)").bind(g.id,g.name).run();
  await env.DB.prepare("UPDATE guild_settings SET tickets_enabled=1 WHERE guild_id=?").bind(g.id).run();
- return json({ok:true,message_id:data.id,channel_id:channelId});
+ return json({ok:true,updated,message_id:messageId,channel_id:channelId,message:updated?"تم تحديث لوحة التذاكر الحالية.":"تم إنشاء لوحة التذاكر."});
 }
 
 const pm=u.pathname.match(/^\/api\/guilds\/([0-9]+)\/ticket-panel$/);
