@@ -11,7 +11,7 @@ Included:
 
 Setup:
 1. Apply the complete schema.sql to the remote D1 database. Existing installations must apply the new oauth_states and dashboard_sessions tables too.
-2. Set PUBLIC_BASE_URL in wrangler.jsonc to the exact deployed Worker origin.
+2. The OAuth callback is generated from the host serving the dashboard, so use the final deployed Worker URL consistently.
 3. Add Worker secrets in Cloudflare: DISCORD_CLIENT_SECRET and DISCORD_PUBLIC_KEY. Never commit secrets.
 4. Discord Developer Portal > OAuth2 > Redirects: add PUBLIC_BASE_URL followed by /auth/discord/callback exactly.
 5. Deploy using npx wrangler deploy.
