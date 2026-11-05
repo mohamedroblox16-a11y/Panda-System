@@ -12,3 +12,4 @@ CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expiry ON dashboard_sessions(e
 CREATE TABLE IF NOT EXISTS ticket_panels (guild_id TEXT PRIMARY KEY,channel_id TEXT,message TEXT NOT NULL DEFAULT 'اختار نوع التذكرة المناسب من الأزرار بالأسفل.',button_label TEXT NOT NULL DEFAULT 'فتح تذكرة',button_emoji TEXT NOT NULL DEFAULT '🎫',updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(guild_id) REFERENCES guild_settings(guild_id) ON DELETE CASCADE);
 
 CREATE TABLE IF NOT EXISTS ticket_panel_posts (guild_id TEXT PRIMARY KEY,channel_id TEXT NOT NULL,message_id TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS ticket_counters (guild_id TEXT PRIMARY KEY,next_number INTEGER NOT NULL DEFAULT 0);
