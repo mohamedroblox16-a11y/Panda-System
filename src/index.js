@@ -40,94 +40,327 @@ async function handleInteraction(i,env){if(i.type===1)return json({type:1});if(i
 
 export class PandaGateway {
   constructor(ctx, env) {
-    this.ctx=ctx; this.env=env; this.ws=null; this.heartbeat=null; this.seq=null;
-    this.retry=0; this.lastAck=Date.now(); this.cooldowns=new Map();
+    this.ctx = ctx;
+    this.env = env;
+    this.ws = null;
+    this.heartbeatTimer = null;
+    this.heartbeatTimeout = null;
+    this.sequence = null;
+    this.awaitingHeartbeatAck = false;
+    this.retryCount = 0;
+    this.cooldowns = new Map();
+    this.intentionalClose = false;
   }
-  async status(){return await this.ctx.storage.get("gateway_status")||{state:"offline",detail:"لم يبدأ الاتصال بعد",updated_at:new Date().toISOString()};}
-  async setStatus(state,detail=""){await this.ctx.storage.put("gateway_status",{state,detail,updated_at:new Date().toISOString()});}
-  async fetch(req){
-    const path=new URL(req.url).pathname;
-    if(path==="/status")return json(await this.status());
-    if(path==="/start"){await this.connect(false);return json({ok:true,status:await this.status()});}
-    return json({error:"not_found"},404);
+
+  async status() {
+    return (await this.ctx.storage.get("gateway_status")) || {
+      state: "offline",
+      detail: "لم يبدأ الاتصال بعد",
+      updated_at: new Date().toISOString()
+    };
   }
-  async connect(force=false){
-    if(!this.env.DISCORD_BOT_TOKEN){await this.setStatus("error","Secret DISCORD_BOT_TOKEN غير موجود في Worker.");return;}
-    if(this.ws&&(this.ws.readyState===0||this.ws.readyState===1)&&!force)return;
-    try{if(this.ws)this.ws.close(1000,"reconnecting");}catch{}
-    if(this.heartbeat){clearInterval(this.heartbeat);this.heartbeat=null;}
-    await this.setStatus("connecting","جاري الاتصال بـ Discord Gateway");
-    try{
-      const ws=new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
-      this.ws=ws;
-      ws.addEventListener("open",()=>console.log("[PandaGateway] WebSocket transport opened; waiting for Discord HELLO."));
-      ws.addEventListener("message",e=>this.onMessage(e.data,ws).catch(err=>console.error("[PandaGateway] message handler failed",err)));
-      ws.addEventListener("close",e=>{console.error("[PandaGateway] WebSocket closed", {code:e.code,reason:e.reason,wasClean:e.wasClean});this.onClose(e,ws);});
-      ws.addEventListener("error",e=>{console.error("[PandaGateway] WebSocket transport error",e?.message||"no error message");this.setStatus("error","حدث خطأ في اتصال Gateway؛ راجع Worker Logs لمعرفة التفاصيل.");});
-      await this.ctx.storage.setAlarm(Date.now()+14*60*1000);
-    }catch(e){await this.setStatus("error","تعذر فتح اتصال Gateway: "+String(e).slice(0,180));await this.ctx.storage.setAlarm(Date.now()+30000);}
+
+  async setStatus(state, detail = "") {
+    const value = { state, detail, updated_at: new Date().toISOString() };
+    await this.ctx.storage.put("gateway_status", value);
+    console.log("[PandaGateway] status", value);
+    return value;
   }
-  send(data){if(this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify(data));}
-  async onMessage(raw,ws){
-    if(ws!==this.ws)return;
-    let p;try{p=JSON.parse(raw);}catch{console.error("[PandaGateway] received a non-JSON Gateway frame");return;}
-    console.log("[PandaGateway] Gateway frame", {op:p.op,event:p.t||null,sequence:p.s??null});
-    if(p.s!==null&&p.s!==undefined)this.seq=p.s;
-    if(p.op===10){
-      const ms=p.d.heartbeat_interval;
-      console.log("[PandaGateway] received HELLO", {heartbeat_interval:ms});
-      if(this.heartbeat)clearInterval(this.heartbeat);
-      this.heartbeat=setInterval(()=>{this.send({op:1,d:this.seq});},ms);
-      console.log("[PandaGateway] sending IDENTIFY", {intents:1|2|512|32768});
-      this.send({op:2,d:{token:this.env.DISCORD_BOT_TOKEN,intents:1|2|512|32768,properties:{"$os":"cloudflare","$browser":"panda-system","$device":"panda-system"}}});
+
+  clearHeartbeat() {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
+    this.heartbeatTimer = null;
+    this.heartbeatTimeout = null;
+    this.awaitingHeartbeatAck = false;
+  }
+
+  async fetch(req) {
+    const path = new URL(req.url).pathname;
+    if (path === "/status") return json(await this.status());
+    if (path === "/start") {
+      await this.connect();
+      return json({ ok: true, status: await this.status() });
+    }
+    return json({ error: "not_found" }, 404);
+  }
+
+  async connect() {
+    if (!this.env.DISCORD_BOT_TOKEN) {
+      await this.setStatus("error", "Cloudflare Secret DISCORD_BOT_TOKEN غير موجود.");
       return;
     }
-    if(p.op===1){this.send({op:1,d:this.seq});return;}
-    if(p.op===7){await this.setStatus("reconnecting","Discord طلب إعادة الاتصال.");await this.connect(true);return;}
-    if(p.op===9){await this.setStatus("reconnecting","جلسة Gateway غير صالحة؛ إعادة المحاولة.");this.seq=null;await this.ctx.storage.setAlarm(Date.now()+5000);return;}
-    if(p.op===11){this.lastAck=Date.now();return;}
-    if(p.op===0){
-      if(p.t==="READY"){console.log("[PandaGateway] READY received; bot is online.");await this.setStatus("online","اتصال Discord Gateway نشط.");this.retry=0;}
-      if(p.t==="RESUMED"){console.log("[PandaGateway] RESUMED received; bot session restored.");await this.setStatus("online","تم استئناف اتصال Discord Gateway.");}
-      if(p.t==="GUILD_MEMBER_ADD")await this.welcome(p.d);
-      if(p.t==="MESSAGE_CREATE")await this.addXp(p.d);
+
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
+      await this.ctx.storage.setAlarm(Date.now() + 10 * 60 * 1000);
+      return;
+    }
+
+    this.clearHeartbeat();
+    await this.setStatus("connecting", "جاري فتح اتصال Discord Gateway...");
+
+    try {
+      const ws = new WebSocket("wss://gateway.discord.gg/?v=10&encoding=json");
+      this.ws = ws;
+      this.intentionalClose = false;
+
+      ws.addEventListener("open", () => {
+        if (this.ws !== ws) return;
+        console.log("[PandaGateway] WebSocket opened; waiting for HELLO.");
+        this.setStatus("connecting", "تم فتح النقل؛ في انتظار HELLO من Discord.");
+      });
+
+      ws.addEventListener("message", event => {
+        this.onMessage(event.data, ws).catch(error => {
+          console.error("[PandaGateway] message handler failed", error?.message || String(error));
+          this.setStatus("error", "حدث خطأ أثناء معالجة رسالة Gateway.");
+        });
+      });
+
+      ws.addEventListener("error", event => {
+        console.error("[PandaGateway] WebSocket transport error", event?.message || "no message");
+      });
+
+      ws.addEventListener("close", event => {
+        console.error("[PandaGateway] WebSocket closed", {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean
+        });
+        this.onClose(event, ws).catch(error => console.error("[PandaGateway] close handler failed", error));
+      });
+
+      // Keep a recovery alarm. It must never forcibly replace a healthy socket.
+      await this.ctx.storage.setAlarm(Date.now() + 10 * 60 * 1000);
+    } catch (error) {
+      console.error("[PandaGateway] connection creation failed", error?.message || String(error));
+      this.ws = null;
+      await this.setStatus("reconnecting", "تعذر فتح الاتصال؛ ستتم إعادة المحاولة.");
+      await this.scheduleReconnect();
     }
   }
-  async onClose(e,ws){
-    if(ws!==this.ws)return;
-    if(this.heartbeat){clearInterval(this.heartbeat);this.heartbeat=null;}
-    const detail=e.code===4014?"Discord رفض Intents؛ فعّل Server Members Intent وMessage Content Intent من Developer Portal.":e.code===4004?"Bot Token غير صحيح.":("انقطع الاتصال (code "+e.code+(e.reason?", reason: "+e.reason:"")+"). إعادة المحاولة.");
-    await this.setStatus("reconnecting",detail);
-    this.retry=Math.min(this.retry+1,6);
-    await this.ctx.storage.setAlarm(Date.now()+Math.min(60000,5000*this.retry));
+
+  send(payload) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(payload));
+    return true;
   }
-  async alarm(){await this.connect(true);}
-  async discord(path,body){
-    if(!this.env.DISCORD_BOT_TOKEN)return;
-    const r=await fetch("https://discord.com/api/v10"+path,{method:"POST",headers:{Authorization:"Bot "+this.env.DISCORD_BOT_TOKEN,"content-type":"application/json"},body:JSON.stringify(body)});
-    if(!r.ok)console.error("Discord REST error",r.status,await r.text().catch(()=>""));
+
+  async onMessage(raw, ws) {
+    if (ws !== this.ws) return;
+    let packet;
+    try {
+      packet = JSON.parse(raw);
+    } catch {
+      console.error("[PandaGateway] ignored non-JSON Gateway frame");
+      return;
+    }
+
+    if (packet.s !== null && packet.s !== undefined) this.sequence = packet.s;
+    console.log("[PandaGateway] Gateway packet", {
+      op: packet.op,
+      event: packet.t || null,
+      sequence: packet.s ?? null
+    });
+
+    // Discord HELLO: begin heartbeats, then IDENTIFY exactly once per fresh session.
+    if (packet.op === 10) {
+      const interval = Number(packet.d?.heartbeat_interval);
+      if (!Number.isFinite(interval) || interval < 1000) {
+        await this.setStatus("error", "Discord أرسل heartbeat_interval غير صالح.");
+        ws.close(4000, "Invalid heartbeat interval");
+        return;
+      }
+
+      this.clearHeartbeat();
+      const jitter = Math.floor(Math.random() * interval);
+      this.heartbeatTimeout = setTimeout(() => this.sendHeartbeat(ws), jitter);
+      this.heartbeatTimer = setInterval(() => this.sendHeartbeat(ws), interval);
+
+      const intents = 1 | 2 | 512 | 32768; // GUILDS, GUILD_MEMBERS, GUILD_MESSAGES, MESSAGE_CONTENT
+      console.log("[PandaGateway] HELLO received; sending IDENTIFY", { interval, intents });
+      this.send({
+        op: 2,
+        d: {
+          token: this.env.DISCORD_BOT_TOKEN,
+          intents,
+          properties: {
+            "$os": "cloudflare",
+            "$browser": "panda-system",
+            "$device": "panda-system"
+          }
+        }
+      });
+      return;
+    }
+
+    if (packet.op === 11) {
+      this.awaitingHeartbeatAck = false;
+      return;
+    }
+
+    if (packet.op === 1) {
+      this.send({ op: 1, d: this.sequence });
+      return;
+    }
+
+    if (packet.op === 7) {
+      console.warn("[PandaGateway] Discord requested reconnect.");
+      this.intentionalClose = true;
+      await this.setStatus("reconnecting", "Discord طلب إعادة الاتصال.");
+      try { ws.close(4000, "Discord requested reconnect"); } catch {}
+      await this.scheduleReconnect(1500);
+      return;
+    }
+
+    if (packet.op === 9) {
+      console.warn("[PandaGateway] Discord invalidated the session; a fresh Identify will be used.");
+      this.sequence = null;
+      this.intentionalClose = true;
+      try { ws.close(4000, "Invalid session"); } catch {}
+      await this.scheduleReconnect(3000 + Math.floor(Math.random() * 2000));
+      return;
+    }
+
+    if (packet.op !== 0) return;
+
+    if (packet.t === "READY") {
+      this.retryCount = 0;
+      console.log("[PandaGateway] READY received; Discord Gateway is connected.");
+      await this.setStatus("online", "اتصال Discord Gateway نشط.");
+      return;
+    }
+
+    if (packet.t === "RESUMED") {
+      this.retryCount = 0;
+      console.log("[PandaGateway] RESUMED received.");
+      await this.setStatus("online", "تم استئناف اتصال Discord Gateway.");
+      return;
+    }
+
+    if (packet.t === "GUILD_MEMBER_ADD") await this.welcome(packet.d);
+    if (packet.t === "MESSAGE_CREATE") await this.addXp(packet.d);
   }
-  async welcome(member){
-    const gid=member.guild_id||member.guild?.id;if(!gid)return;
-    const s=await this.env.DB.prepare("SELECT welcome_enabled,welcome_channel_id,welcome_message,welcome_image_url FROM guild_settings WHERE guild_id=?").bind(gid).first();
-    if(!s||!s.welcome_enabled||!s.welcome_channel_id)return;
-    const user=member.user||member;
-    let content=String(s.welcome_message||"أهلاً {user} نورت السيرفر! 🐼").replaceAll("{user}","<@"+user.id+">").replaceAll("{username}",user.username||"عضو").replaceAll("{server}","السيرفر");
-    const body={content,allowed_mentions:{parse:["users"]}};
-    if(s.welcome_image_url)body.embeds=[{image:{url:s.welcome_image_url}}];
-    await this.discord("/channels/"+s.welcome_channel_id+"/messages",body);
+
+  sendHeartbeat(ws) {
+    if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
+    if (this.awaitingHeartbeatAck) {
+      console.error("[PandaGateway] heartbeat ACK timed out; reconnecting.");
+      this.intentionalClose = false;
+      try { ws.close(4000, "Heartbeat ACK timeout"); } catch {}
+      return;
+    }
+    this.awaitingHeartbeatAck = true;
+    ws.send(JSON.stringify({ op: 1, d: this.sequence }));
   }
-  async addXp(msg){
-    if(!msg.guild_id||!msg.author||msg.author.bot||!msg.content?.trim())return;
-    const key=msg.guild_id+":"+msg.author.id,now=Date.now(),last=this.cooldowns.get(key)||0;
-    if(now-last<60000)return;this.cooldowns.set(key,now);
-    const s=await this.env.DB.prepare("SELECT levels_enabled,xp_multiplier FROM guild_settings WHERE guild_id=?").bind(msg.guild_id).first();
-    if(!s||!s.levels_enabled)return;
-    const amount=Math.max(1,Math.round((15+Math.floor(Math.random()*11))*(Number(s.xp_multiplier)||1)));
-    await this.env.DB.prepare("INSERT INTO level_profiles(guild_id,user_id,xp,level,messages_count) VALUES(?,?,?,0,1) ON CONFLICT(guild_id,user_id) DO UPDATE SET xp=xp+excluded.xp,messages_count=messages_count+1,updated_at=CURRENT_TIMESTAMP").bind(msg.guild_id,msg.author.id,amount).run();
-    const row=await this.env.DB.prepare("SELECT xp,level FROM level_profiles WHERE guild_id=? AND user_id=?").bind(msg.guild_id,msg.author.id).first();
-    let level=0;while(level<1000&&row.xp>=5*level*level+50*level+100)level++;
-    if(level!==row.level)await this.env.DB.prepare("UPDATE level_profiles SET level=?,updated_at=CURRENT_TIMESTAMP WHERE guild_id=? AND user_id=?").bind(level,msg.guild_id,msg.author.id).run();
+
+  async onClose(event, ws) {
+    if (this.ws !== ws) return;
+    this.clearHeartbeat();
+    this.ws = null;
+
+    if (event.code === 4004 || event.code === 4013 || event.code === 4014) {
+      const detail = event.code === 4004
+        ? "Discord رفض Bot Token؛ راجع التوكن داخل Cloudflare Secrets."
+        : event.code === 4014
+          ? "Discord رفض Privileged Intents؛ فعّل Server Members وMessage Content من Developer Portal."
+          : "Discord رفض Intents المرسلة؛ راجع إعدادات Gateway Intents.";
+      await this.setStatus("error", detail);
+      // These errors need a settings change, not a rapid reconnect loop.
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+
+    const detail = this.intentionalClose
+      ? "إعادة اتصال مطلوبة؛ جاري المحاولة."
+      : "انقطع اتصال Gateway (code " + event.code + (event.reason ? ", reason: " + event.reason : "") + ").";
+    await this.setStatus("reconnecting", detail);
+    await this.scheduleReconnect();
+  }
+
+  async scheduleReconnect(delay) {
+    this.retryCount = Math.min(this.retryCount + 1, 6);
+    const wait = delay ?? Math.min(60000, 5000 * this.retryCount);
+    await this.ctx.storage.setAlarm(Date.now() + wait);
+  }
+
+  async alarm() {
+    // A scheduled alarm is a health check, not a command to kill a live socket.
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
+      await this.ctx.storage.setAlarm(Date.now() + 10 * 60 * 1000);
+      return;
+    }
+    await this.connect();
+  }
+
+  async discord(path, body) {
+    if (!this.env.DISCORD_BOT_TOKEN) return;
+    const response = await fetch("https://discord.com/api/v10" + path, {
+      method: "POST",
+      headers: {
+        Authorization: "Bot " + this.env.DISCORD_BOT_TOKEN,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      console.error("[PandaGateway] Discord REST error", response.status, detail.slice(0, 300));
+    }
+  }
+
+  async welcome(member) {
+    const guildId = member.guild_id || member.guild?.id;
+    if (!guildId) return;
+    const settings = await this.env.DB.prepare(
+      "SELECT welcome_enabled,welcome_channel_id,welcome_message,welcome_image_url FROM guild_settings WHERE guild_id=?"
+    ).bind(guildId).first();
+    if (!settings?.welcome_enabled || !settings.welcome_channel_id) return;
+
+    const user = member.user || member;
+    const content = String(settings.welcome_message || "أهلاً {user} نورت السيرفر! 🐼")
+      .replaceAll("{user}", "<@" + user.id + ">")
+      .replaceAll("{username}", user.username || "عضو")
+      .replaceAll("{server}", "السيرفر");
+
+    const body = { content, allowed_mentions: { parse: ["users"] } };
+    if (settings.welcome_image_url) body.embeds = [{ image: { url: settings.welcome_image_url } }];
+    await this.discord("/channels/" + settings.welcome_channel_id + "/messages", body);
+  }
+
+  async addXp(message) {
+    if (!message.guild_id || !message.author || message.author.bot || !message.content?.trim()) return;
+
+    const key = message.guild_id + ":" + message.author.id;
+    const now = Date.now();
+    const last = this.cooldowns.get(key) || 0;
+    if (now - last < 60000) return;
+    this.cooldowns.set(key, now);
+
+    const settings = await this.env.DB.prepare(
+      "SELECT levels_enabled,xp_multiplier FROM guild_settings WHERE guild_id=?"
+    ).bind(message.guild_id).first();
+    if (!settings?.levels_enabled) return;
+
+    const multiplier = Number(settings.xp_multiplier) || 1;
+    const amount = Math.max(1, Math.round((15 + Math.floor(Math.random() * 11)) * multiplier));
+
+    await this.env.DB.prepare(
+      "INSERT INTO level_profiles(guild_id,user_id,xp,level,messages_count) VALUES(?,?,?,0,1) " +
+      "ON CONFLICT(guild_id,user_id) DO UPDATE SET xp=xp+excluded.xp,messages_count=messages_count+1,updated_at=CURRENT_TIMESTAMP"
+    ).bind(message.guild_id, message.author.id, amount).run();
+
+    const profile = await this.env.DB.prepare(
+      "SELECT xp,level FROM level_profiles WHERE guild_id=? AND user_id=?"
+    ).bind(message.guild_id, message.author.id).first();
+
+    let level = 0;
+    while (level < 1000 && profile.xp >= 5 * level * level + 50 * level + 100) level++;
+    if (level !== profile.level) {
+      await this.env.DB.prepare(
+        "UPDATE level_profiles SET level=?,updated_at=CURRENT_TIMESTAMP WHERE guild_id=? AND user_id=?"
+      ).bind(level, message.guild_id, message.author.id).run();
+    }
   }
 }
 
