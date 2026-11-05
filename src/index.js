@@ -366,12 +366,15 @@ async function handleInteraction(i, env, ctx) {
       // Defer the component update immediately, then lock the channel in the background.
       ctx.waitUntil((async () => {
         const content = await closeTicketForInteraction(i, env);
-        await editInteractionReply(i, { content, components: [] });
+        // Remove the close button only after Discord confirms the channel lock succeeded.
+        await editInteractionReply(i, content.startsWith("🔒")
+          ? { content, components: [] }
+          : { content });
       })().catch(async error => {
         console.error("[Tickets] close background task failed", error?.stack || error);
+        // Keep the button available so the user can retry after the issue is fixed.
         await editInteractionReply(i, {
-          content: "حصل خطأ أثناء إغلاق التذكرة. راجع سجلات Cloudflare.",
-          components: []
+          content: "حصل خطأ أثناء إغلاق التذكرة. راجع سجلات Cloudflare."
         });
       }));
 
